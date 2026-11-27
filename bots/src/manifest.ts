@@ -2,7 +2,7 @@
 // this is the service's own copy, checked before a request for a sibling may create anything. One file per owner,
 // named by the owner's hash, on the supervisor's volume and outside everything a sandbox mounts.
 
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "./guards";
 import { BOT_KEY, botIdFor, MAIN_KEY } from "./owner";
@@ -100,5 +100,23 @@ export class OwnerManifests {
     if (!held || held.state !== "deleting") return;
     file.bots[key] = { state: "removed", seq: held.seq };
     this.#save(ownerDid, file);
+  }
+
+  /** Every sibling key the owner's file names, in any state. Throws for a file that is not valid. */
+  siblingKeys(ownerDid: string): string[] {
+    return Object.keys(this.#load(ownerDid).bots).filter(key => key !== MAIN_KEY);
+  }
+
+  /**
+   * Account erase: the owner's file, and the temporary file a save leaves behind if it stopped part-way. Nothing is
+   * created, so an owner who has no file is already erased.
+   */
+  erase(ownerDid: string): void {
+    const path = this.#path(ownerDid);
+    rmSync(path, { force: true });
+    rmSync(`${path}.new`, { force: true });
+    if (!existsSync(this.#root)) return;
+    const dir = openSync(this.#root, "r");
+    try { fsyncSync(dir); } finally { closeSync(dir); }
   }
 }

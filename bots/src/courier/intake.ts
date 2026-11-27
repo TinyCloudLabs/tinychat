@@ -40,7 +40,7 @@ export interface CourierThread {
 interface Receipt { peer: string; status: "claimed" | "done" | "lost"; at: number; acked: boolean }
 /** `rate` holds the admission times of the last hour across every peer: the cap is per owner. */
 interface OwnerState { receipts: Record<string, Receipt>; rate: number[]; peerRates: Record<string, number[]>; threads: Record<string, CourierThread> }
-export interface IntakeStore { load(): Map<string, OwnerState>; save(ownerId: string, state: OwnerState): void }
+export interface IntakeStore { load(): Map<string, OwnerState>; save(ownerId: string, state: OwnerState): void; remove(ownerId: string): void }
 
 function validState(value: unknown): value is OwnerState {
   if (!isRecord(value) || !isRecord(value.receipts) || !Array.isArray(value.rate) || !isRecord(value.peerRates) || !isRecord(value.threads)) return false;
@@ -67,6 +67,7 @@ export function courierIntakeStore(dir: string, key: Uint8Array): IntakeStore {
       return states;
     },
     save(ownerId, state) { sealed.save(ownerId, ownerId, state); },
+    remove(ownerId) { sealed.remove(ownerId); },
   };
 }
 
@@ -156,6 +157,15 @@ export class CourierIntake {
   }
   deleteThread(owner: string, id: string): void {
     const state = this.#state(owner); delete state.threads[id]; this.#save(owner, state);
+  }
+  /**
+   * Account erase: the owner's receipts, rates and threads go, in memory and on disk. Call it with no pass running (a
+   * pass saves what it holds); the owner has no grant by then, so a later pass starts nothing for them.
+   */
+  eraseOwner(owner: string): void {
+    const id = botIdFor(owner.toLowerCase());
+    this.#states.delete(id);
+    this.options.store.remove(id);
   }
   /** True when the sender's inbox will stop listing the message (or there is nothing to tell it). */
   async #acknowledged(transport: CourierTransport, message: CourierInbound, peerHash: string): Promise<boolean> {

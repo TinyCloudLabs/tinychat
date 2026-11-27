@@ -96,7 +96,8 @@ for a sibling may create anything. `main` exists without being announced; a sibl
 
 - `PUT /v1/bots/<key>` `{ "state": "active" | "suspended" | "deleting", "seq": <integer> }` announces a bot's state
   and answers `{ "state": <the state now held> }`. `seq` is the registry's counter: an update with a `seq` at or below
-  the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting`.
+  the one held is ignored, and so is anything after `deleting`. `main` cannot be set to `deleting` and a user cannot
+  delete it; only account erase (the next route) removes it.
   A bot this service has not seen before is refused with `409 { "error": "owner_bot_limit" }` when its owner already
   has `BOTS_MAX_PER_OWNER` bots here, `main` included. Bots that are `deleting` or gone are not counted, a bot first
   announced as `deleting` is not refused, and an update to a bot already held is never refused.
@@ -104,6 +105,16 @@ for a sibling may create anything. `main` exists without being announced; a sibl
   `{ "outcome": "gone" }`, `{ "outcome": "waiting", "cause": "archive_pending" | "closing" | "gateway_cleanup_pending" }`
   or `{ "outcome": "failed", "cause": ... }`. Once gone, the bot is `removed` for good, and a
   request that was still waiting on the deletion is refused (503) instead of starting the bot again.
+- `POST /v1/bots/main/erase` (empty body, no query string) is account erase (TC-4416), for the backend's account
+  deletion and nothing else. It is the only way Main's state is removed. The call must be signed (the legacy bearer
+  gets 401) and the owner is the signature's alone. It does not check `BOTS_TEST_ACCOUNTS`, so an address that was
+  taken off the list can be erased; the signature and a well-formed owner DID are required. It removes Main, every
+  sibling the owner's manifest names, the manifest and everything the gateway holds (see Account erase below).
+  Answers: `200 { "outcome": "gone" }` once nothing is left, and the same for every repeat;
+  `409 { "outcome": "pending", "cause": "closing" | "in_use" | "gateway_cleanup_pending" | "teardown_failed" | "gateway_erase_failed" }`
+  when the call should be repeated; `503 { "outcome": "failed", "cause": ... }` when something needs attention
+  (`unsupported` for a runtime whose gateway cannot erase, `residue`, `error`); `400` for a body or a query string.
+  Only `"outcome": "gone"` means erased. A 404 does not: a service without this route answers 404.
 
 | | active | suspended | deleting | unknown or removed |
 | --- | --- | --- | --- | --- |
@@ -154,6 +165,38 @@ nothing and logs `state_delete_skipped` with the cause. The backend retries expl
 waits, then starts a fresh bot. Once shutdown begins, deletion is refused, including a deletion still waiting for teardown.
 
 The supervisor creates data and run roots with mode 0700 and refuses roots that are symlinks, owned by another user, or writable by group or others.
+
+### Account erase
+
+Erase is a different path from deleting, and it writes nothing for the owner anywhere. It retires Main and each sibling
+at once, so no request starts or writes for them, stops a running sandbox (which ends a turn in flight) and waits up
+to 10 seconds for what is left to unwind. It does not wait for the history to be archived: unsaved history is dropped,
+because archiving writes to the owner's space. It puts no setting back, which a normal deletion does for the owner's
+off for questions. It removes `/data/bots/<bot id>`, `/run/bots/<bot id>`, `/data/bots/<bot id>.history-revocation.json`
+and the egress directory of each bot, then asks the gateway to erase the owner, then removes the owner's manifest last,
+so a repeat still knows the siblings' keys. A failed erase leaves the bots retired until the next supervisor restart, so
+nothing new accrues while the backend repeats the call.
+
+The gateway side is `POST /owners/<DID>/erase {"keys": [...]}` on the control socket (supervisor only). It stops the
+listeners and tokens of Main, the siblings in `keys`, Courier's bot, and every bot the owner map names for the owner,
+and removes the owner's entries from `budget.json` (per-bot token and web counts), `held.json`, `actions.json`,
+`owners.json`, the sealed secret requests (`secret-grants/`, found by bot id when the key service was down at start)
+and the three Courier stores (`courier-grants/`, `courier-peers/` with the SDK's records bound to the owner, and
+`courier-intake/`). The gateway answers `{ "outcome": "gone" }` or 503 `{ "outcome": "failed" }`; neither names the
+owner.
+
+What an erase leaves, on purpose or because it cannot be attributed:
+
+- The gateway's day totals across all bots in `budget.json` (one anonymous cap; lowering it would hand an erased
+  account's tokens back).
+- Delegations the owner signed (Courier grant, peers, secret requests) run to their expiry: revoking one is a write
+  to the owner's space, which an erase does not make. The backend or the owner's browser owns that.
+- An SDK record sealed under a key this gateway cannot open is not told apart from another owner's and stays.
+- A bot the manifest does not name (a lost manifest) is found in the gateway through the owner map only; its
+  supervisor directory is left to the retention sweep.
+- Log lines carry fixed outcomes and 12-character hash prefixes of bot ids, never content.
+- The regular runtime (`bots-regular/`) shares this code but its gateway cannot erase: it answers
+  `503 { "outcome": "failed", "cause": "unsupported" }`.
 
 ## Containment
 

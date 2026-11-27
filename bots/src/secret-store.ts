@@ -76,11 +76,36 @@ export function sealedGrantStore(dir: string, key: Uint8Array): GrantStore {
       syncDir(dir);
     },
     remove(id) {
+      rmSync(`${file(id)}.new`, { force: true });
       if (!existsSync(file(id))) return;
       rmSync(file(id), { force: true });
       syncDir(dir);
     },
   };
+}
+
+/**
+ * Account erase when the sealing key is not available (the key service was down at start): removes every file that
+ * names one of these bots, a half-written one included, without opening it. The bot id is the only field in the clear.
+ * Files that are not valid JSON are left, since nothing says whose they are.
+ */
+export function removeSealedFor(dir: string, botIds: readonly string[]): void {
+  if (!existsSync(dir)) return;
+  const ids = new Set(botIds);
+  let removed = false;
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith(".json") && !name.endsWith(".json.new")) continue;
+    let sealed: unknown;
+    try {
+      sealed = JSON.parse(readFileSync(join(dir, name), "utf8"));
+    } catch {
+      continue;
+    }
+    if (!isRecord(sealed) || typeof sealed.botId !== "string" || !ids.has(sealed.botId)) continue;
+    rmSync(join(dir, name), { force: true });
+    removed = true;
+  }
+  if (removed) syncDir(dir);
 }
 
 function syncDir(dir: string): void {

@@ -18,11 +18,19 @@ import { createCourierPeerStore } from "./peer-store";
 import { replyToCourierThread } from "./reply";
 import { courierTurn } from "./turn";
 
+/** A pass can wait on a peer's turn for up to 90 s; an erase waits less than the supervisor's own deadline for it. */
+const ERASE_PASS_WAIT_MS = 25_000;
+
 export interface CourierGateway {
   /** One pass over pairing upkeep and intake; joins a pass already running. */
   tick(): Promise<void>;
   stop(): void;
   control(req: Request): Promise<Response | undefined>;
+  /**
+   * Account erase: the owner's grant, peers, SDK records and intake state, in memory and on disk, with nothing written
+   * to the owner's space. Throws unless all of it is gone; call again.
+   */
+  erase(owner: string): Promise<void>;
 }
 
 /** The peer store holds an exclusive lock on its directory: a failed start must release it. */
@@ -95,6 +103,16 @@ export async function startCourierGateway(options: { cfg: GatewayConfig; gateway
   return {
     tick,
     stop() { clearInterval(timer); peers.close(); },
+    async erase(owner) {
+      await pairing.erase(owner);
+      // A pass saves the intake state it holds, so intake is cleared only once none is running. The owner has no grant
+      // now, so a pass that starts later does nothing for them.
+      const pass = running;
+      if (pass && !(await Promise.race([pass.then(() => true, () => true), Bun.sleep(ERASE_PASS_WAIT_MS).then(() => false)]))) {
+        throw new Error("courier_pass_running");
+      }
+      intake.eraseOwner(owner);
+    },
     async control(req: Request): Promise<Response | undefined> {
       const match = /^\/courier\/([^/]+)(\/.*)$/.exec(new URL(req.url).pathname);
       if (!match) return undefined;

@@ -28,6 +28,11 @@ export interface CourierPairing {
   list(owner: string): Promise<CourierPeer[]>;
   pair(owner: string, artifact: string): Promise<CourierPairResult>;
   unpair(owner: string, handle: string): Promise<void>;
+  /**
+   * Account erase: the owner's grant goes first, so nothing can restore their session, then every peer row and SDK
+   * record. Runs in the owner's queue, behind any pass in flight. It revokes nothing: the owner's space is not written.
+   */
+  erase(owner: string): Promise<void>;
   maintain(owner: string): Promise<void>;
 }
 class PairingError extends Error {
@@ -267,6 +272,16 @@ export function createCourierPairing(options: {
         if (!COURIER_HANDLE.test(handle)) throw new PairingError("invalid", 400);
         await store.retire(owner, handle);
         await cleanRetired(owner);
+      });
+    },
+    erase(owner) {
+      return serial(owner, async () => {
+        await grants.delete(owner);
+        await store.eraseOwner(owner);
+        const key = owner.toLowerCase();
+        accepts.delete(key);
+        idleSwept.delete(key);
+        for (const logKey of renewalLogged.keys()) if (logKey.startsWith(`${key} `)) renewalLogged.delete(logKey);
       });
     },
     maintain(owner) {

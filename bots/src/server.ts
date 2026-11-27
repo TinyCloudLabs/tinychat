@@ -3,7 +3,7 @@
 
 import type { ActivityRecord, HistoryGrantUpdate, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
-import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
+import { type AppSource, type AsksSettings, type BotMessenger, type EraseSkip, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
@@ -97,12 +97,20 @@ export interface AppOptions {
     deleteBot?(ownerDid: string, key: string): Promise<DeleteSkip | undefined>;
     /** The owner's "Start a new chat" for Main (BotManager.newChat). Without it the service has none (404). */
     newChat?(ownerDid: string): Promise<DeleteSkip | "busy" | undefined>;
+    /**
+     * Account erase for Main and the siblings named by `keys` (BotManager.eraseOwner). Without it, or without the
+     * manifest's siblingKeys and erase, the service has no erase route (404).
+     */
+    eraseOwner?(ownerDid: string, keys: readonly string[]): Promise<EraseSkip | undefined>;
   };
   /** Which siblings the backend has announced. Without it the service has only Main, always active. */
   manifest?: {
     stateOf(ownerDid: string, key: string): BotState | undefined;
     announce(ownerDid: string, key: string, state: AnnouncedState, seq: number): BotState;
     markRemoved(ownerDid: string, key: string): void;
+    /** Every sibling key the owner's file names, and removing that file (account erase). */
+    siblingKeys?(ownerDid: string): string[];
+    erase?(ownerDid: string): void;
   };
 }
 
@@ -244,6 +252,36 @@ async function remove(options: AppOptions, owner: string, key: string): Promise<
   return Response.json({ outcome: waiting ? "waiting" : "failed", cause });
 }
 
+/** Causes after which an erase is worth asking for again soon; any other cause needs someone to look. */
+const ERASE_PENDING: readonly string[] = ["closing", "in_use", "gateway_cleanup_pending", "teardown_failed", "gateway_erase_failed"];
+const ERASE_PATH = `/v1/bots/${MAIN_KEY}/erase`;
+
+/**
+ * `POST /v1/bots/main/erase` (TC-4416): account erase, for the backend's erase of an address. The owner is the one the
+ * call is signed for and nothing else; the body is empty. Everything this service holds for the owner goes (see
+ * BotManager.eraseOwner and the gateway's erase), the owner's file last, so that asking again after a failure finds
+ * the same bots. Answers `{ outcome: "gone" }` (also for an owner that is already erased), `{ outcome: "pending", cause }`
+ * (409) or `{ outcome: "failed", cause }`. A cause is a fixed word; nothing the owner wrote is in an answer or a log.
+ */
+async function erase(options: AppOptions, req: Request, url: URL, owner: string): Promise<Response> {
+  const { manifest } = options;
+  if (!options.bots.eraseOwner || (manifest && !(manifest.siblingKeys && manifest.erase))) return new Response(null, { status: 404 });
+  if (url.search !== "" || (await req.arrayBuffer()).byteLength > 0) return Response.json({ outcome: "failed", cause: "invalid" }, { status: 400 });
+  let cause: string | undefined;
+  try {
+    cause = await options.bots.eraseOwner(owner, manifest?.siblingKeys?.(owner) ?? []);
+    if (cause === undefined) manifest?.erase?.(owner);
+  } catch {
+    cause = "error";
+  }
+  if (cause === undefined) {
+    console.log(JSON.stringify({ bots: "owner_erased" }));
+    return Response.json({ outcome: "gone" });
+  }
+  console.log(JSON.stringify({ bots: "owner_erase_skipped", cause }));
+  return Response.json({ outcome: ERASE_PENDING.includes(cause) ? "pending" : "failed", cause }, { status: ERASE_PENDING.includes(cause) ? 409 : 503 });
+}
+
 export function createApp(options: AppOptions): (req: Request) => Promise<Response> {
   const environment = options.environment ?? "private";
   const acceptLegacy = options.acceptLegacyOwnerHeader ?? legacyOwnerHeaderAccepted(process.env);
@@ -257,11 +295,13 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     let owner: string | null = null;
     let req = incoming;
     const signed = authorization?.startsWith(SIGNED_SCHEME) === true;
+    // Erase is for an address that may already be off the list of accounts, so it does not check that list.
+    const eraseCall = incoming.method === "POST" && path === ERASE_PATH;
     if (signed) {
       // The body is read once to check its hash, then passed on.
       const body = new Uint8Array(await incoming.arrayBuffer().catch(() => new ArrayBuffer(0)));
       const claims = verifyCall(authorization, { method: incoming.method, path: path + url.search, body }, { secret: options.secret, direction: "to-service", environment, nonces });
-      if (claims && claims.bot === match?.[1] && ownerAllowed(claims.owner, options.accounts)) {
+      if (claims && claims.bot === match?.[1] && (eraseCall || ownerAllowed(claims.owner, options.accounts))) {
         owner = claims.owner;
         req = new Request(incoming.url, { method: incoming.method, headers: incoming.headers, body: body.byteLength > 0 ? body : undefined });
       }
@@ -271,6 +311,7 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (!owner) return new Response(null, { status: 401 });
     if (!match || !isBotKey(match[1]!)) return new Response(null, { status: 404 });
     const key = match[1]!;
+    if (eraseCall) return signed ? await erase(options, req, url, owner) : new Response(null, { status: 401 });
     const rest = match[2] ?? "";
     if (rest === "") {
       if (!options.manifest) return new Response(null, { status: 404 });

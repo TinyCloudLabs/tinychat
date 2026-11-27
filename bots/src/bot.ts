@@ -86,6 +86,9 @@ export interface Sandbox {
   stop(): Promise<void | "gateway_cleanup_pending">;
 }
 
+/** Why an erase left something: a deletion's causes, a request that did not end in time, or something found after the delete. */
+export type EraseSkip = DeleteSkip | "in_use" | "residue" | "gateway_erase_failed" | "unsupported";
+
 export interface SandboxLauncher {
   /** Whether the bot has ever run, i.e. has a session to list. */
   hasState(layout: BotLayout): boolean;
@@ -99,6 +102,11 @@ export interface SandboxLauncher {
   endTurn?(layout: BotLayout): Promise<void>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
+  /**
+   * Account erase: removes everything the model gateway holds for the owner's bots (its own files, in-memory counts and
+   * the Courier stores). Throws unless every part is gone. Absent, a launcher cannot erase an owner.
+   */
+  eraseOwner?(ownerDid: string, keys: readonly string[]): Promise<void>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
   mountPoints?(): string[];
   provenance?(layout: BotLayout): Promise<unknown>;
@@ -186,6 +194,8 @@ const PAGE_LIMIT = 256;
 const MAX_PAGES = 64;
 const MAX_ACTIVITY_COUNT = 256;
 const HOST_TOOLS_TIMEOUT_MS = 5_000;
+/** How long an account erase waits for a request in flight to unwind after its sandbox is stopped. */
+const ERASE_QUIET_MS = 10_000;
 const MESSAGE_BOT = "message_bot";
 
 /**
@@ -386,6 +396,12 @@ export class Bot {
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<StopFailure | undefined> | undefined;
   #deleting: Promise<DeleteSkip | undefined> | undefined;
+  /** An account erase of this bot, running or just finished with a cause; requests wait for it like a deletion. */
+  #erasing: Promise<EraseSkip | undefined> | undefined;
+  /** Gateway syncs in flight; an erase waits for them, or one could write the bot's files back. */
+  readonly #background = new Set<Promise<unknown>>();
+  /** Requests parked on a deletion; an erase does not wait for those, they wait for the erase. */
+  #blocked = 0;
   #webSaves: Promise<void> = Promise.resolve();
   #askSaves: Promise<void> = Promise.resolve();
   #readSaves: Promise<void> = Promise.resolve();
@@ -422,7 +438,33 @@ export class Bot {
   }
 
   #syncAsks(turn?: { outside: boolean }): Promise<void> {
-    return this.#launcher.syncAsks?.(this.layout, turn, this.#ownerDid) ?? Promise.resolve();
+    return this.#track(this.#launcher.syncAsks?.(this.layout, turn, this.#ownerDid) ?? Promise.resolve());
+  }
+
+  #syncActions(keys?: readonly string[]): Promise<void> {
+    return this.#track(this.#launcher.syncActions?.(this.layout, keys) ?? Promise.resolve());
+  }
+
+  #track<T>(work: Promise<T>): Promise<T> {
+    const tracked = work.then(() => {}, () => {});
+    this.#background.add(tracked);
+    void tracked.then(() => this.#background.delete(tracked));
+    return work;
+  }
+
+  /** Waits for a deletion or an erase of this bot to finish. */
+  async #wait(): Promise<void> {
+    this.#blocked++;
+    try {
+      await this.#deleting;
+      await this.#erasing;
+    } finally { this.#blocked--; }
+  }
+
+  /** Like #wait, for a request that writes: refused once the bot's state is gone, so it cannot bring a file back. */
+  async #afterDeletion(): Promise<void> {
+    await this.#wait();
+    if (this.#retired) throw new Error("bot_retired");
   }
 
   /**
@@ -446,7 +488,7 @@ export class Bot {
     let turnJournal: HistoryJournal | undefined;
     if (this.#options.history) {
       this.#busy = true;
-      await this.#deleting;
+      await this.#wait();
       if (this.#retired) { this.#busy = false; sink.error("bot_unavailable"); return; }
       try {
         // TC-3933: a bot that has never had an archive grant starts no journal. Journaling starts when a grant arrives; the
@@ -537,7 +579,7 @@ export class Bot {
       clearInterval(heartbeat);
       // Questions Main asked during the turn are collected now, while the gateway still holds them.
       void this.#syncAsks().catch(() => {});
-      void this.#launcher.syncActions?.(this.layout, []).catch(() => {});
+      void this.#syncActions([]).catch(() => {});
       if (turnJournal) {
         try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { turnJournal.append({ type: "provenance", verified: false }); }
@@ -551,7 +593,7 @@ export class Bot {
   /** The newest messages of Main's session; empty for a bot that has never run (without starting one). */
   async list(): Promise<ListedMessage[]> {
     if (this.#options.history) {
-      await this.#deleting;
+      await this.#wait();
       if (this.#retired) throw new Error("bot_retired");
       this.#history ??= new HistoryJournal(this.layout, this.#options.history);
       // A bot that keeps no journal (TC-3933) shows what its own state holds, as a bot without history does.
@@ -565,7 +607,7 @@ export class Bot {
     this.#clearIdle();
     try {
       // A bot whose working state is being deleted lists nothing once that is done.
-      await this.#deleting;
+      await this.#wait();
       if (this.#retired) throw new Error("bot_retired");
       if (!this.#sandbox && !this.#launcher.hasState(this.layout)) return [];
       const sandbox = await this.#ensure();
@@ -579,7 +621,7 @@ export class Bot {
 
   /** The owner's web setting and today's counts. A gateway that cannot answer reads as unavailable, with zero counts. */
   async webSettings(): Promise<WebSettings> {
-    await this.#deleting;
+    await this.#afterDeletion();
     const policy = readWebPolicy(this.layout);
     const none = { available: false, today: { searches: 0, pages: 0, blocked: 0 } };
     let status: unknown;
@@ -601,7 +643,7 @@ export class Bot {
    */
   setWebPolicy(policy: WebPolicy): Promise<WebSettings> {
     const saved = this.#webSaves.then(async () => {
-      await this.#deleting;
+      await this.#afterDeletion();
       const previous = readWebPolicy(this.layout);
       mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
       writeWebPolicy(this.layout, policy);
@@ -622,7 +664,7 @@ export class Bot {
 
   /** Whether the owner lets Main ask questions. On until the owner turns it off. */
   async asksSettings(): Promise<AsksSettings> {
-    await this.#deleting;
+    await this.#afterDeletion();
     return { enabled: readAsksEnabled(this.layout) };
   }
 
@@ -635,7 +677,7 @@ export class Bot {
    */
   setAsksEnabled(enabled: boolean): Promise<AsksSettings> {
     const saved = this.#askSaves.then(async () => {
-      await this.#deleting;
+      await this.#afterDeletion();
       const previous = readAsksEnabled(this.layout);
       writeAsksEnabled(this.layout, enabled);
       if (!enabled) {
@@ -666,7 +708,7 @@ export class Bot {
   setReads(owner: string, areas: ReadArea[]): Promise<ReadsSetting> {
     const setting: ReadsSetting = areas.length > 0 ? { areas, owner } : { areas: [] };
     const saved = this.#readSaves.then(async () => {
-      await this.#deleting;
+      await this.#afterDeletion();
       writeReads(this.layout, setting);
       await this.#launcher.pushReads?.(this.layout).catch(() => log("reads_setting_push_failed", this.layout.botId));
       log("reads_setting", this.layout.botId, { areas: areas.length });
@@ -677,9 +719,9 @@ export class Bot {
 
   /** The owner's requests from Main: questions and proposals so far (collected from the gateway first), open first. */
   async requests(): Promise<(AskRequest | ActionRequest)[]> {
-    await this.#deleting;
+    await this.#afterDeletion();
     await this.#syncAsks().catch(() => {});
-    await this.#launcher.syncActions?.(this.layout).catch(() => {});
+    await this.#syncActions().catch(() => {});
     const asks = new AskStore(this.layout).list();
     const actions = new ActionStore(this.layout).list();
     const open = (request: AskRequest | ActionRequest) => request.state === "pending" || request.state === "sending";
@@ -688,14 +730,14 @@ export class Bot {
 
   /** Records the owner's decision on one request. Only a pending, unexpired request can be decided; a proposal only declined here. */
   async answerRequest(id: string, input: AnswerInput): Promise<AnswerResult | ActionResult> {
-    await this.#deleting;
+    await this.#afterDeletion();
     const actions = new ActionStore(this.layout);
     if (actions.has(id)) {
       if (input.decision !== "decline") return { ok: false, error: "invalid" };
       const result = actions.decline(id);
       if (result.ok) {
         log("action_resolved", this.layout.botId, { outcome: "declined" });
-        void this.#launcher.syncActions?.(this.layout).catch(() => {});
+        void this.#syncActions().catch(() => {});
       }
       return result;
     }
@@ -714,7 +756,7 @@ export class Bot {
    * Recipients outside `messenger.keys` are not sent to. Main is told the outcome by an app message.
    */
   async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
-    await this.#deleting;
+    await this.#afterDeletion();
     // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
     if (await this.holdsOwnerData()) return { ok: false, error: "held" };
     const store = new ActionStore(this.layout);
@@ -804,6 +846,8 @@ export class Bot {
    * Resolves to why the state was kept, or to undefined once it is gone.
    */
   deleteWorkingState(reason: string, closing = () => false, retire = false): Promise<DeleteSkip | undefined> {
+    // An erase removes everything this would; what it left is left, and the sweep or the backend tries again.
+    if (this.#erasing) return this.#erasing.then(cause => cause === undefined ? undefined : "error");
     // Also when a deletion is already under way: that one retires the bot when it succeeds.
     if (retire) this.#retiring = true;
     this.#deleting ??= (async () => {
@@ -853,6 +897,63 @@ export class Bot {
     return this.#deleting;
   }
 
+  /**
+   * Account erase (TC-4416): removes everything this bot holds on this host for a deleted account, and writes nothing for
+   * the owner anywhere. Unlike deleteWorkingState it does not wait for the history to be archived (that is a write to
+   * the owner's space), keeps no history, and puts no setting back. The bot is retired at once, so no request starts or
+   * writes; a running sandbox is stopped, which ends a turn in flight, and the erase waits for what is left to unwind.
+   * It stays retired when it could not finish, and the next call goes on. Resolves to why something was left, or to
+   * undefined once the bot's directories and its revocation marker are gone.
+   */
+  eraseWorkingState(closing: () => boolean = () => false): Promise<EraseSkip | undefined> {
+    this.#retiring = true;
+    this.#retired = true;
+    this.#erasing ??= (async (): Promise<EraseSkip | undefined> => {
+      let cause: EraseSkip | undefined;
+      try {
+        await this.#deleting;
+        const stopFailure = await this.#stopSandbox();
+        if (this.#launcher.leftover(this.layout)) cause = "teardown_failed";
+        else if (stopFailure) cause = stopFailure;
+        else if (await this.#launcher.cleanupEgress?.(this.layout) === false) cause = "gateway_cleanup_pending";
+        else if (!(await this.#quiet())) cause = "in_use";
+        else if (closing()) cause = "closing";
+        else cause = await removeWorkingState(this.layout, this.#launcher);
+        if (!cause) {
+          removeHistoryRevocation(this.layout);
+          const left = [this.layout.dataDir, this.layout.bundleDir, this.layout.dataDir + ".history-revocation.json"];
+          if (left.some(path => lstatSync(path, { throwIfNoEntry: false }))) cause = "residue";
+        }
+      } catch {
+        cause = "error";
+      }
+      if (cause) log("state_erase_skipped", this.layout.botId, { cause });
+      else {
+        this.#history = undefined;
+        this.#grantSeen = undefined;
+        log("state_erased", this.layout.botId);
+      }
+      return cause;
+    })().finally(() => {
+      this.#erasing = undefined;
+    });
+    return this.#erasing;
+  }
+
+  /**
+   * Waits until nothing of this bot is in flight but requests parked on the erase, and for the gateway syncs it
+   * started. False when something is still running after ERASE_QUIET_MS.
+   */
+  async #quiet(): Promise<boolean> {
+    const until = Date.now() + ERASE_QUIET_MS;
+    for (;;) {
+      await Promise.all([...this.#background]);
+      if (this.#blocked >= (this.#busy ? 1 : 0) + this.#listing) return true;
+      if (Date.now() >= until) return false;
+      await Bun.sleep(25);
+    }
+  }
+
   /** Writes the owner's off for questions and requests back when the setting file is gone. Logged when it cannot be. */
   #keepAsksOff(): void {
     try {
@@ -898,7 +999,7 @@ export class Bot {
   async #historyOperation<T>(run: (journal: HistoryJournal) => T | Promise<T>, existing = false): Promise<T | undefined> {
     this.#listing++;
     try {
-      await this.#deleting;
+      await this.#wait();
       if (this.#retired) throw new Error("bot_retired");
       if (existing && !existsSync(join(this.layout.dataDir, "history.json"))) return undefined;
       return await run(this.#journal());
@@ -1085,10 +1186,12 @@ export class Bot {
 
   #ensure(): Promise<Sandbox> {
     if (this.#sandbox) return Promise.resolve(this.#sandbox);
+    // Erased: nothing starts, and no start is left parked on the erase that is stopping this bot.
+    if (this.#retired) return Promise.reject(new Error("bot_retired"));
     this.#starting ??= (async () => {
       // Never launch over a sandbox still being torn down (both would mount the same state filesystem), nor
       // before a deletion of the bot's working state has finished.
-      await this.#deleting;
+      await this.#wait();
       await this.#stopping;
       if (this.#retired) throw new Error("bot_retired");
       // At the cap a start is refused, never squeezed into memory the running bots may need. A leftover's place
@@ -1223,6 +1326,31 @@ export class BotManager {
   deleteBot(ownerDid: string, key: string): Promise<DeleteSkip | undefined> {
     const bot = this.forBot(ownerDid, key);
     return this.deleteWorkingState(bot.layout.botId, "deleted", true);
+  }
+
+  /**
+   * Account erase (TC-4416): Main and each sibling in `keys` (every key the owner's manifest names), then everything the
+   * gateway holds for the owner. Nothing is written for the owner. The bots are dropped once it succeeds, so an address
+   * that signs up again starts a new one. Resolves to the first thing left, or to undefined once all of it is gone.
+   */
+  eraseOwner(ownerDid: string, keys: readonly string[]): Promise<EraseSkip | undefined> {
+    if (this.#closing) return Promise.resolve("closing");
+    const bots = [this.forOwner(ownerDid), ...keys.filter(key => key !== MAIN_KEY).map(key => this.forBot(ownerDid, key))];
+    const erasure = (async (): Promise<EraseSkip | undefined> => {
+      const causes = await Promise.all(bots.map(bot => bot.eraseWorkingState(() => this.#closing)));
+      const left = causes.find(cause => cause !== undefined);
+      if (left) return left;
+      if (!this.#launcher.eraseOwner) return "unsupported";
+      try {
+        await this.#launcher.eraseOwner(ownerDid, keys);
+      } catch {
+        return "gateway_erase_failed";
+      }
+      for (const bot of bots) this.#bots.delete(bot.layout.botId);
+    })();
+    this.#deletions.add(erasure);
+    void erasure.finally(() => this.#deletions.delete(erasure));
+    return erasure;
   }
 
   /**

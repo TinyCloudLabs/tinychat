@@ -390,6 +390,11 @@ export class SecretGrants {
     return true;
   }
 
+  /** Account erase: every request of the bot goes, keys and sealed file with it. Throws if a file cannot be removed. */
+  removeBot(botId: string): void {
+    for (const [id, record] of [...this.#records]) if (record.botId === botId) this.remove(botId, id);
+  }
+
   /**
    * One call_with_secret call. `pushed` is the supervisor's list for the bot, which knows of requests the gateway
    * hasn't been sent yet. Returns the tool result and a one-word outcome to log; neither ever holds the value, the
