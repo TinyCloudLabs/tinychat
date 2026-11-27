@@ -572,6 +572,10 @@ async function runGranolaSync(
                   break;
                 }
                 if (!write.upsert.ok) {
+                  if (write.upsert.error.code === "GRANOLA_MEETING_DELETED") {
+                    result.skipped++;
+                    continue;
+                  }
                   result.errors.push(`${summary.id}: ${write.upsert.error.message}`);
                   if (isStorageFullError(write.upsert.error)) {
                     terminal = fromStore(write.upsert.error, "upsertMeeting");

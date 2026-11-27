@@ -172,7 +172,7 @@ export const GranolaCsvImport: FC<GranolaCsvImportProps> = ({
       )}
 
       {skippedDeleted > 0 && (
-        <GranolaAllowBack className="mt-1" backendUrl={backendUrl} sessionStore={sessionStore} />
+        <GranolaAllowBack className="mt-1" outline tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
       )}
     </section>
   );
