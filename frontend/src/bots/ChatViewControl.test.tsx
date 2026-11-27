@@ -37,13 +37,16 @@ async function render(admitted: boolean) {
   return { host, radio };
 }
 
-test("an account the backend lets into bots can pick Bots, and the choice is kept for it", async () => {
+test("an account the backend lets into bots defaults to Bots and can switch back to Classic", async () => {
   const { host, radio } = await render(true);
   expect(host.querySelector("h2")?.textContent).toBe("Chat view");
   expect(host.textContent).toContain(HELPER);
-  expect(radio("Classic").checked).toBe(true);
+  expect(radio("Bots").checked).toBe(true);
   expect(radio("Bots").disabled).toBe(false);
   expect(host.textContent).not.toContain(NOT_ADMITTED);
+  await act(async () => radio("Classic").click());
+  expect(radio("Classic").checked).toBe(true);
+  expect(readChatView(ACCOUNT)).toBe("classic");
   await act(async () => radio("Bots").click());
   expect(radio("Bots").checked).toBe(true);
   expect(readChatView(ACCOUNT)).toBe("bots");

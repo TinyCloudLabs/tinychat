@@ -21,6 +21,7 @@ test("the Bots view opens the session's archive when no history override is supp
     read: async () => [{ id: "archive-1", role: "bot", text: "An archived message", at: "" }],
   });
   try {
+    saveChatView(account, "classic");
     await act(async () => root.render(
       <MemoryRouter initialEntries={["/chat"]}>
         <ChatSlot account={account} tcw={tcw} active classic={<p>Classic chat</p>}

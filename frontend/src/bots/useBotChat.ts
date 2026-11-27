@@ -3,18 +3,36 @@
 // is Main's chat's (useMainChat.ts): one turn at a time per bot, as the bots service allows.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import { BotsError, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
+import { isDeclinedReply } from "./askText";
+import { BotsError, BotsNoReply, type BotActivity, type BotMessage, type BotStep, type MainEvent, type SendOptions } from "./botsApi";
 import { isHistoryDeclined } from "./historyAuthorization";
-import type { ChatLine, MainChatState, MainTurn } from "./useMainChat";
+import type { ReadArea } from "./trustbotReadAreas";
+import type { AppReply, ChatLine, MainChatState, MainTurn } from "./useMainChat";
+
+/** The read area behind each step that reads the owner's data. */
+const STEP_AREAS: Partial<Record<BotStep, ReadArea>> = { meetings: "meetings", feed: "feed_chats", chats: "feed_chats", telegram: "telegram" };
+
+const withoutAreas = (line: ChatLine, keep: (area: ReadArea) => boolean = () => false): ChatLine => {
+  const areas = line.areas?.filter(keep) ?? [];
+  const { areas: _, ...rest } = line;
+  return areas.length ? { ...rest, areas } : rest;
+};
+
+/** What a line the app sent for this decision carries. */
+const appMark = (reply: AppReply | undefined) => reply
+  ? { app: reply.decision, ...(reply.secret ? { secret: reply.secret } : {}), ...(reply.names ? { names: reply.names } : {}) }
+  : {};
 
 /** How the view reaches one bot. */
 export interface BotChatSource {
   list(signal?: AbortSignal): Promise<BotMessage[]>;
   /** The same read as `list`, with the activity records. When present it is used in place of `list`. */
   listConversation?(signal?: AbortSignal): Promise<{ messages: BotMessage[]; activity: BotActivity[] }>;
-  send(text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal): Promise<void>;
+  send(text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal, options?: SendOptions): Promise<void>;
   /** Runs before each send, ahead of the earlier messages (the history permission, for instance). */
   prepare?(): Promise<void>;
+  /** Called when an app-originated reply got 409 no_reply (already delivered elsewhere). */
+  onNoReply?(): void;
 }
 
 export interface BotChatState extends MainChatState {
@@ -38,6 +56,14 @@ export interface BotChats {
   /** Loads the earlier messages again, unless a turn is in flight (its reply is not in them yet). */
   loadHistory(key: string): Promise<void>;
   send(key: string, text: string): Promise<void>;
+  /** Tells a bot what the owner decided on a request/proposal card; queued behind an in-flight turn. */
+  sendAppReply(key: string, reply: AppReply): void;
+  /** Clears a bot's conversation in view after "Start a new chat". */
+  clear(key: string): void;
+  /** Dismisses one contextual access card under `lineId` for this page session. */
+  notNow(key: string, lineId: string, area: ReadArea): void;
+  /** Re-runs the question before `lineId` once after the owner grants access from its card. */
+  askAgain(key: string, lineId: string): void;
   /** Sends a failed turn's message again. */
   retry(key: string): void;
   /** The bot on screen, or null; its `unseen` clears. */
@@ -56,6 +82,8 @@ interface Entry {
   turn: AbortController | null;
   draft: string;
   activity: ActivityItem[];
+  queued: (() => void)[];
+  cleared: number;
 }
 
 const EMPTY: BotChatState = { lines: [], history: "idle", turn: null, unseen: false };
@@ -103,7 +131,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
   const entry = (key: string): Entry => {
     let found = entries.get(key);
     if (!found) {
-      found = { state: EMPTY, history: null, turn: null, draft: "", activity: NO_ACTIVITY };
+      found = { state: EMPTY, history: null, turn: null, draft: "", activity: NO_ACTIVITY, queued: [], cleared: 0 };
       entries.set(key, found);
     }
     return found;
@@ -132,6 +160,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
   const loadHistory = (key: string): Promise<void> => {
     const target = entry(key);
     const signal = lifetime.signal;
+    const generation = target.cleared;
     const run = (async () => {
       update(key, (state) => ({ ...state, history: "loading" }));
       try {
@@ -139,8 +168,26 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
         const { messages, activity } = source.listConversation
           ? await source.listConversation(signal)
           : { messages: await source.list(signal), activity: [] };
-        update(key, (state) => ({ ...state, history: "loaded", lines: messages.map(({ id, role, text, unreadableHistory }): ChatLine => ({ id, role, text, ...(unreadableHistory ? { unreadableHistory } : {}) })) }));
-        setActivity(key, anchorActivity(messages, activity));
+        update(key, (state) => {
+          if (generation !== target.cleared) return state;
+          const listed = messages.map(({ id, role, text, origin, decision, secret, unreadableHistory }): ChatLine => ({
+            id, role, text,
+            ...(unreadableHistory ? { unreadableHistory } : {}),
+            ...(origin === "app" ? { app: decision ?? (isDeclinedReply(text) ? "declined" as const : "answered" as const), ...(secret ? { secret } : {}) } : {}),
+          }));
+          const ids = new Set(listed.map((line) => line.id));
+          const pending: ChatLine[] = [];
+          for (let i = 0; i < state.lines.length; i++) {
+            const line = state.lines[i]!;
+            if (!line.id.startsWith("local-")) continue;
+            const reply = state.lines[i + 1]?.role === "bot" ? state.lines[++i] : undefined;
+            if (reply && ids.has(reply.id)) continue;
+            pending.push(line);
+            if (reply) pending.push(reply);
+          }
+          return { ...state, history: "loaded", lines: [...listed, ...pending] };
+        });
+        if (generation === target.cleared) setActivity(key, anchorActivity(messages, activity));
       } catch (cause) {
         if (signal.aborted) return;
         // The failure row says only that it failed; the console keeps why, for support.
@@ -148,7 +195,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
           ...errorFields(cause),
           cause: cause instanceof Error && cause.cause !== undefined ? errorFields(cause.cause) : undefined,
         });
-        update(key, (state) => ({ ...state, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
+        update(key, (state) => (generation !== target.cleared ? state : { ...state, history: isHistoryDeclined(cause) ? "declined" : "failed" }));
       }
     })();
     target.history = run;
@@ -156,7 +203,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
   };
   const ensureHistory = (key: string) => entry(key).history ?? loadHistory(key);
 
-  const run = async (key: string, text: string, keepFailed: boolean) => {
+  const run = async (key: string, text: string, keepFailed: boolean, appReply?: AppReply) => {
     const target = entry(key);
     if (target.turn || lifetime.signal.aborted) return;
     const controller = new AbortController();
@@ -164,23 +211,30 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
     const stop = () => controller.abort();
     lifetime.signal.addEventListener("abort", stop, { once: true });
     const failed = keepFailed && target.state.turn?.state === "error"
-      ? { id: `local-${++localId}`, role: "user" as const, text: target.state.turn.text }
+      ? { id: `local-${++localId}`, role: "user" as const, text: target.state.turn.text, ...appMark(target.state.turn.appReply) }
       : null;
-    update(key, (state) => ({ ...state, lines: failed ? [...state.lines, failed] : state.lines, turn: { text, reply: "", state: "starting" } }));
+    update(key, (state) => ({
+      ...state,
+      lines: failed ? [...state.lines, failed] : state.lines,
+      turn: { text, reply: "", state: "starting", ...(appReply ? { appReply } : {}) },
+    }));
     if (failed) settleActivity(key, failed.id);
+    const source = sourceFor(key);
     try {
-      const source = sourceFor(key);
       // The earlier messages load first, so the new one is never listed twice.
       await source.prepare?.();
       await ensureHistory(key);
       if (controller.signal.aborted) return;
       let reply = "";
+      const areas: ReadArea[] = [];
       await source.send(text, (event) => {
         if (event.type === "status") setTurn(key, (turn) => ({ ...turn, state: event.state }));
         else if (event.type === "delta") {
           reply += event.text;
           setTurn(key, (turn) => ({ ...turn, state: "working", reply, step: { step: "writing" } }));
         } else if (event.type === "step") {
+          const area = STEP_AREAS[event.step];
+          if (area && !areas.includes(area)) areas.push(area);
           setTurn(key, (turn) => ({ ...turn, step: { step: event.step, ...(event.host ? { host: event.host } : {}) } }));
         } else if (event.type === "activity") {
           const known = entry(key).activity;
@@ -189,19 +243,31 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
           const userId = `local-${++localId}`;
           update(key, (state) => ({
             ...state,
-            lines: [...state.lines, { id: userId, role: "user", text }, { id: event.messageId, role: "bot", text: reply }],
+            lines: state.lines.some((line) => line.id === event.messageId)
+              ? state.lines
+              : [
+                ...state.lines,
+                { id: userId, role: "user", text, ...appMark(appReply) },
+                { id: event.messageId, role: "bot", text: reply, ...(areas.length ? { areas: [...areas] } : {}) },
+              ],
             turn: null,
             unseen: state.unseen || viewing !== key,
           }));
           settleActivity(key, userId);
         } else setTurn(key, (turn) => ({ ...turn, state: "error", error: event.code }));
-      }, controller.signal);
+      }, controller.signal, appReply ? { appReply: { requestId: appReply.requestId } } : undefined);
     } catch (cause) {
       if (controller.signal.aborted) return;
-      setTurn(key, (turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : isHistoryDeclined(cause) ? "history_declined" : "failed" }));
+      if (cause instanceof BotsNoReply) {
+        update(key, (state) => ({ ...state, turn: null }));
+        source.onNoReply?.();
+      } else {
+        setTurn(key, (turn) => ({ ...turn, state: "error", error: cause instanceof BotsError ? cause.code : isHistoryDeclined(cause) ? "history_declined" : "failed" }));
+      }
     } finally {
       lifetime.signal.removeEventListener("abort", stop);
       if (target.turn === controller) target.turn = null;
+      if (!controller.signal.aborted) target.queued.shift()?.();
     }
   };
 
@@ -214,10 +280,36 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
     ensureHistory,
     loadHistory: (key) => (entry(key).turn ? ensureHistory(key) : loadHistory(key)),
     send: (key, text) => run(key, text, true),
+    sendAppReply(key, reply) {
+      const target = entry(key);
+      if (target.turn) target.queued.push(() => void run(key, "", true, reply));
+      else void run(key, "", true, reply);
+    },
+    clear(key) {
+      const target = entry(key);
+      target.cleared += 1;
+      target.history = Promise.resolve();
+      update(key, (state) => ({ ...state, lines: [], history: "loaded" }));
+      setActivity(key, NO_ACTIVITY);
+    },
+    notNow(key, lineId, area) {
+      update(key, (state) => state.lines.some((line) => line.id === lineId && line.areas?.includes(area))
+        ? { ...state, lines: state.lines.map((line) => (line.id === lineId ? withoutAreas(line, (other) => other !== area) : line)) }
+        : state);
+    },
+    askAgain(key, lineId) {
+      const target = entry(key);
+      const { lines, turn } = target.state;
+      const line = lines.at(-1);
+      if (lifetime.signal.aborted || target.turn || turn || line?.id !== lineId || line.role !== "bot" || !line.areas?.length) return;
+      update(key, (state) => ({ ...state, lines: state.lines.map((other) => (other.id === lineId ? withoutAreas(other) : other)) }));
+      const question = lines.at(-2);
+      if (question?.role === "user" && !question.app && !question.unreadableHistory && question.text) void run(key, question.text, true);
+    },
     activity: (key) => entries.get(key)?.activity ?? NO_ACTIVITY,
     retry(key) {
       const turn = entries.get(key)?.state.turn;
-      if (turn?.state === "error") void run(key, turn.text, false);
+      if (turn?.state === "error") void run(key, turn.text, false, turn.appReply);
     },
     view(key) {
       viewing = key;
@@ -229,6 +321,7 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
     },
     dispose() {
       lifetime.abort();
+      for (const item of entries.values()) item.queued = [];
       listeners.clear();
     },
   };

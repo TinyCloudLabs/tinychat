@@ -5,7 +5,17 @@ import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore
 
 import { currentAgentClientContext } from "../lib/agentChatApi";
 
-import { BotsError, createMainEventParser, toActivity, type BotActivity, type BotMessage, type MainEvent } from "./botsApi";
+import {
+  BotsError,
+  BotsNoReply,
+  createMainEventParser,
+  toActivity,
+  toMessages,
+  type BotActivity,
+  type BotMessage,
+  type MainEvent,
+  type SendOptions,
+} from "./botsApi";
 import type { HistoryNotice } from "./historyNotice";
 import { createBotRosterApi, type BotRosterApi } from "./botRosterApi";
 
@@ -23,7 +33,7 @@ export interface BotChatApi {
   /** The same read as `listMessages`, with the activity records. Absent: the view shows no activity lines. */
   listConversation?(key: string, signal?: AbortSignal): Promise<BotConversation>;
   /** Resolves after the stream's `done` or `error` event; throws BotsError when the stream fails or ends without one. */
-  send(key: string, text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal): Promise<void>;
+  send(key: string, text: string, onEvent: (event: MainEvent) => void, signal?: AbortSignal, options?: SendOptions): Promise<void>;
   /** The bot's expiry notice, or null when there is none (or the history routes are off). */
   readNotice(key: string): Promise<HistoryNotice | null>;
   acknowledgeNotice(key: string, notice: HistoryNotice, renderedAt: number): Promise<HistoryNotice>;
@@ -46,17 +56,6 @@ const noticePath = (key: string) => (key === "main" ? "/api/bots/history/notice"
 /** A JSON value's fields, each still unknown: any non-null object may be read this way. */
 function fields(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function toMessages(payload: unknown): BotMessage[] {
-  const list = fields(payload).messages;
-  if (!Array.isArray(list)) throw new BotsError("failed");
-  return list.flatMap((item: unknown) => {
-    const value = fields(item);
-    return typeof value.id === "string" && (value.role === "user" || value.role === "bot") && typeof value.text === "string"
-      ? [{ id: value.id, role: value.role, text: value.text, at: typeof value.at === "string" ? value.at : "" }]
-      : [];
-  });
 }
 
 /** The activity records of a list response: each one that has the service's exact shape, in the service's order. */
@@ -133,14 +132,17 @@ export function createBotChatApi({ baseUrl, getToken, fetch: fetchImpl = (input,
 
     listConversation,
 
-    async send(key, text, onEvent, signal) {
+    async send(key, text, onEvent, signal, options) {
       // The owner's local date and time zone, as the meeting chat sends them, so the bot reads "today" as the owner does.
-      const body = { text, clientContext: currentAgentClientContext() };
+      const body = options?.appReply
+        ? { appReply: { requestId: options.appReply.requestId } }
+        : { text, clientContext: currentAgentClientContext() };
       const response = await request("POST", `${botPath(key)}/messages`, { signal, body });
       if (response.status === 400) throw new BotsError("invalid");
       // The backend's own `message` is never shown: only its code picks the owner's line (botsStrings.ts).
       if (!response.ok) {
         const code = fields(await response.json().catch(() => null)).error;
+        if (response.status === 409 && code === "no_reply") throw new BotsNoReply();
         throw new BotsError(code === "bot_unavailable" ? "bot_unavailable" : "failed");
       }
       if (!response.body) throw new BotsError("failed");

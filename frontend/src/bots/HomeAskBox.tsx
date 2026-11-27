@@ -2,6 +2,7 @@
 // status says the account has bots, and a read of Main's messages comes back (Sam, 11-13: "hide this bar until chat
 // is working"). Until then, and for everyone else, Home shows no box at all. A failed read is tried again each minute.
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import { useInRouterContext, useNavigate } from "react-router-dom";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
@@ -10,11 +11,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listThreads } from "../lib/threadStore";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
+import { botPath } from "./botPath";
 import { botsApi, type BotsApi } from "./botsApi";
 import { botRosterApi } from "./botChatApi";
 import type { BotRosterApi } from "./botRosterApi";
 import { useBotsNav } from "./botsNav";
 import type { WorkingBot } from "./BotWorking";
+import { useSavedChatView } from "./chatViewSetting";
+import { enqueueMainSend, useMainBotBridge } from "./mainBotBridge";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
@@ -48,9 +52,41 @@ function useMainFace(roster: RosterRead | null): WorkingBot | undefined {
   return listed ?? read;
 }
 
+/**
+ * Unified Feed entry point (Option A): keeps the quick AskBox and pending approval/question cards on Feed,
+ * and hands off straight into /chat/bot/main (backed by the single BotChats store owned by BotsSurface).
+ */
+function MainAskHandoff({ account }: { account: string }) {
+  const navigate = useNavigate();
+  const bridge = useMainBotBridge(account);
+  const openChat = useCallback(() => {
+    void navigate(botPath("main"));
+  }, [navigate]);
+  const send = useCallback((text: string) => {
+    if (bridge) bridge.sendMain(text);
+    else enqueueMainSend(account, text);
+    void navigate(botPath("main"));
+  }, [account, bridge, navigate]);
+  const asks = bridge?.asks;
+  return (
+    <>
+      <AskBox working={bridge?.working ?? false} onSend={send} onOpenMain={openChat} />
+      {asks && asks.support === "yes" && (asks.pending.length > 0 || asks.stopped || asks.secrets.length > 0) ? (
+        <div className="mb-6 flex flex-col gap-3" data-home-asks="">
+          <AskCards asks={asks} />
+          <SecretCards asks={asks} onMessage={openChat} />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 /** `roster` reads the main bot's icon. Without it only the real client reads one, so a stand-in `api` makes no other call. */
 export function HomeAskBox({ api = botsApi, roster = api === botsApi ? botRosterApi : null, tcw, onReconnect }: { api?: BotsApi; roster?: RosterRead | null; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
   const [working, setWorking] = useState(false);
+  const inRouter = useInRouterContext();
+  const account = tcw?.did ?? null;
+  const [savedView] = useSavedChatView(account);
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -66,7 +102,9 @@ export function HomeAskBox({ api = botsApi, roster = api === botsApi ? botRoster
     void check();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [api]);
-  return working ? <MainAsk api={api} roster={roster} tcw={tcw} onReconnect={onReconnect} /> : null;
+  if (!working) return null;
+  if (inRouter && account !== null && savedView !== "classic") return <MainAskHandoff account={account} />;
+  return <MainAsk api={api} roster={roster} tcw={tcw} onReconnect={onReconnect} />;
 }
 
 function MainAsk({ api, roster, tcw, onReconnect }: { api: BotsApi; roster: RosterRead | null; tcw?: TinyCloudWeb; onReconnect?: () => void }) {

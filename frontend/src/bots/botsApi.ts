@@ -287,7 +287,7 @@ export function createMainEventParser(onEvent: (event: MainEvent) => void): (chu
   };
 }
 
-function toMessages(payload: unknown): BotMessage[] {
+export function toMessages(payload: unknown): BotMessage[] {
   const list = fields(payload).messages;
   if (!Array.isArray(list)) throw new BotsError("failed");
   return list.flatMap((item: unknown) => {

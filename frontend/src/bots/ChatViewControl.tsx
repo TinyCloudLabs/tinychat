@@ -6,18 +6,18 @@ import { MessagesSquareIcon } from "lucide-react";
 import { SectionCard } from "@/components/ui/section-card";
 import { botsApi as defaultBotsApi, type BotsApi } from "./botsApi";
 import { BOT_VIEW_STRINGS } from "./botsStrings";
-import { useChatView, type ChatView } from "./chatViewSetting";
+import { useSavedChatView, type ChatView } from "./chatViewSetting";
 import { useBotsAdmitted } from "./useBotsAdmitted";
 
 const text = BOT_VIEW_STRINGS.chatView;
 
 export function ChatViewSetting({ account, api = defaultBotsApi }: { account: string | null; api?: BotsApi }) {
-  const [view, setView] = useChatView(account);
+  const [saved, setView] = useSavedChatView(account);
   const admitted = useBotsAdmitted(account ? api : null);
   const id = useId();
   if (!account) return null;
-  // What the Chat slot shows: Bots only once the backend has let the account in.
-  const shown: ChatView = view === "bots" && admitted ? "bots" : "classic";
+  // Admitted accounts default to Bots unless they explicitly chose Classic; non-admitted accounts stay on Classic.
+  const shown: ChatView = admitted === true ? (saved ?? "bots") : "classic";
   const option = (value: ChatView, label: string, disabled: boolean) => (
     <label className="flex min-h-11 items-center gap-2 text-sm has-[:disabled]:opacity-50 fine:min-h-9">
       <input type="radio" name={id} value={value} checked={shown === value} disabled={disabled}
