@@ -24,6 +24,7 @@ import type { EarlierHistoryMove } from "./earlierHistory";
 import { SecretCards } from "./SecretCard";
 import type { Asks } from "./useAsks";
 import type { ReadSettings } from "./trustbotReadGrant";
+import type { ReadArea } from "./trustbotReadAreas";
 import { CourierSetup } from "./courier/CourierSetup";
 
 export function Line({ role, text }: Pick<ChatLine, "role" | "text">) {
@@ -109,7 +110,13 @@ export interface MainChatProps {
   earlierHistory?: EarlierHistoryMove;
   /** The main bot's icon as its owner picked it. Absent: the first icon. */
   face?: WorkingBot;
+  /** "Not now" on an access card under a reply. */
+  onNotNow?: (lineId: string, area: ReadArea) => void;
+  /** Access given from a card under a reply: its question may go again. */
+  onAskAgain?: (lineId: string) => void;
 }
+
+const ACCESS = { meetings: MeetingsAccess, feed_chats: FeedChatsAccess, telegram: TelegramAccess } as const;
 
 /** Services that answered 404 for web access, so reopening Main's chat does not show the button again. */
 const WITHOUT_WEB_ACCESS = new WeakSet<WebAccessApi>();
@@ -135,14 +142,25 @@ export function WebAccessToggle({ api }: { api: WebAccessApi }) {
 
 const StandingReadsCard = lazy(() => import("./StandingReadsCard"));
 
-export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, onShowHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory, face = MAIN_BOT }: MainChatProps) {
+export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, onShowHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory, face = MAIN_BOT, onNotNow, onAskAgain }: MainChatProps) {
   const [readSettings, setReadSettings] = useState<ReadSettings | null>(null);
+  // A read area changed in a card remounts the settings view's sections, and one changed there remounts the cards, so
+  // each reads the stored settings again once and neither shows a state the other replaced.
+  const [revision, setRevision] = useState({ settings: 0, cards: 0 });
+  const changedInSettings = useCallback((stored: ReadSettings) => {
+    setReadSettings(stored);
+    setRevision((current) => ({ ...current, cards: current.cards + 1 }));
+  }, []);
   // The settings stay mounted while the conversation shows (and the conversation while they show), so what each loads
   // and holds is the same as when both were one list; the header button only switches which one is visible.
   const [settings, setSettings] = useState(false);
   useEffect(() => { if (!open) setSettings(false); }, [open]);
   const { lines, history, turn } = state;
   const working = isWorking(turn);
+  // The newest reply's cards: one for each area its turn tried that is off or ended, until the owner writes again.
+  const last = lines.at(-1);
+  const cards = open && meetings && readSettings && !turn && last?.role === "bot"
+    ? (last.areas ?? []).filter((area) => readSettings.areas[area] === "off" || readSettings.areas[area] === "ended") : [];
   // A question, a proposal or a secret request the owner has not decided: the bot waits on them.
   const awaitingOwner = !!asks && (asks.pending.some((request) => request.state === "pending") || asks.secrets.some((secret) => secret.state === "pending"));
   const sdkPromptOpen = useSdkPromptOpen();
@@ -202,9 +220,9 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
         <div ref={settingsTop} className={cn("mx-auto w-full max-w-2xl flex-col gap-5 py-4", settings ? "flex" : "hidden")} data-bots-main-settings="">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
-          {open && meetings ? <MeetingsAccess api={meetings} onSettings={setReadSettings} /> : null}
-          {open && meetings ? <FeedChatsAccess api={meetings} onSettings={setReadSettings} /> : null}
-          {open && meetings ? <TelegramAccess api={meetings} /> : null}
+          {open && meetings ? <MeetingsAccess key={`meetings-${revision.settings}`} api={meetings} onSettings={setReadSettings} onChanged={changedInSettings} /> : null}
+          {open && meetings ? <FeedChatsAccess key={`feed-${revision.settings}`} api={meetings} onSettings={setReadSettings} onChanged={changedInSettings} /> : null}
+          {open && meetings ? <TelegramAccess key={`telegram-${revision.settings}`} api={meetings} onChanged={changedInSettings} /> : null}
           {open && readSettings?.standingAvailable && meetings?.stopStandingArea ? <Suspense fallback={null}><StandingReadsCard settings={readSettings} revoke={meetings.revokeReadGrant} /></Suspense> : null}
           {open && courier ? <CourierSetup /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
@@ -224,6 +242,18 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
             line.unreadableHistory ? <p key={line.id} className="text-callout text-muted-foreground">{line.text}</p>
               : line.app ? <AppLine key={line.id} decision={line.app} names={line.names} live={line.id.startsWith("local-")} secret={line.secret} /> : <Line key={line.id} role={line.role} text={line.text} />
           ))}
+          {last && meetings ? cards.map((area) => {
+            const Access = ACCESS[area];
+            return (
+              <div key={`${last.id}:${area}:${revision.cards}`} className="flex flex-col rounded-2xl border border-border bg-card p-4 empty:hidden" data-bots-access-card={area}>
+                <Access api={meetings} chatList={false} onNotNow={onNotNow ? () => onNotNow(last.id, area) : undefined} onChanged={(stored) => {
+                  setReadSettings(stored);
+                  setRevision((current) => ({ ...current, settings: current.settings + 1 }));
+                  if (stored.areas[area] === "on") onAskAgain?.(last.id);
+                }} />
+              </div>
+            );
+          }) : null}
           {turn ? (
             <>
               {turn.appReply ? <AppLine decision={turn.appReply.decision} names={turn.appReply.names} live secret={turn.appReply.secret} /> : <Line role="user" text={turn.text} />}
