@@ -35,7 +35,7 @@ export function accountDeletionGrantFailure(failure: WebhookFailure): string {
 type State =
   | { phase: "idle" }
   | { phase: "working" }
-  | { phase: "blocked"; message: string; retryable: boolean; stage: "recordings" | "credentials"; pending?: boolean };
+  | { phase: "blocked"; message: string; retryable: boolean; stage: "recordings" | "credentials" | "deleted"; pending?: boolean };
 
 /**
  * "Delete OpenKey account". Requests the existing recordings purge before removing the Fireflies
@@ -74,7 +74,12 @@ export function DeleteOpenKeyAccountButton(props: {
   const [state, setState] = useState<State>({ phase: "idle" });
 
   const proceed = async () => {
-    setState({ phase: "idle" });
+    setState({ phase: "working" });
+    const cleared = await webhooks.clearDeleted("fireflies");
+    if (cleared.status !== "ok") {
+      setState({ phase: "blocked", message: "Couldn't clear your deleted Fireflies meeting list. Try again.", retryable: true, stage: "deleted" });
+      return;
+    }
     await open();
   };
 
@@ -129,11 +134,13 @@ export function DeleteOpenKeyAccountButton(props: {
         <div>
           <p className={`mb-2 text-xs ${state.pending ? "text-muted-foreground" : "text-destructive"}`} role="alert">{state.message}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void (state.stage === "recordings" ? teardownCredentials() : proceed())} className="text-destructive">
-              Continue to OpenKey
-            </Button>
+            {state.stage !== "deleted" && (
+              <Button variant="outline" size="sm" onClick={() => void (state.stage === "recordings" ? teardownCredentials() : proceed())} className="text-destructive">
+                Continue to OpenKey
+              </Button>
+            )}
             {state.retryable && (
-              <Button variant="ghost" size="sm" onClick={() => void (state.stage === "recordings" ? start() : teardownCredentials())}>
+              <Button variant="ghost" size="sm" onClick={() => void (state.stage === "recordings" ? start() : state.stage === "credentials" ? teardownCredentials() : proceed())}>
                 Try again
               </Button>
             )}

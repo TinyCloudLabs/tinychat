@@ -17,7 +17,10 @@ import path from "node:path";
 // 7,652,000: the one-at-a-time Granola delete (TC-4413) measures 7,648,383 bytes at boot, 3,383 over the 7,645,000 before it.
 // The marker guard in upsertMeeting, the combined-meeting count and the delete sheet sit in the Library and sync modules
 // the app starts with. The remaining 3,617 bytes are headroom; the lazy-loading work that wins them back is TC-4328.
-const ENTRY_CHUNK_BUDGET = 7_652_000;
+// 7,661,000: Fireflies and Google Meet per-item deletion (TC-4414) measures 7,656,967 bytes at boot, 4,967 over
+// the 7,652,000 budget. Source-marker guards and the Library delete flow share startup connector modules.
+// The remaining 4,033 bytes are headroom; the lazy-loading work that wins them back is TC-4328.
+const ENTRY_CHUNK_BUDGET = 7_661_000;
 
 const dist = path.resolve(process.argv[2] ?? path.join(import.meta.dir, "../dist"));
 const html = readFileSync(path.join(dist, "index.html"), "utf8");
