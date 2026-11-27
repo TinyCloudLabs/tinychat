@@ -66,6 +66,13 @@ export interface TinyCloudWebConfig {
   openkey?: TinyCloudWebSdkConfig["openkey"];
   /** Omit it and the SDK config is exactly what it was before: the keys are not present. */
   registryPublish?: RegistryPublishHooks;
+  /**
+   * Called with the client when the SDK reports `account.setup.pending` at the end of a sign-in: the owner has no
+   * account record and the SDK can offer setup. Subscribing also keeps the SDK's own setup toast from showing, so the
+   * host's notice is the only prompt. Only `createTinyCloudWeb` (and so `createAndSignIn`) subscribes; a restore never
+   * sets an account up. Omit it and nothing is subscribed.
+   */
+  onAccountSetupPending?: (client: TinyCloudWeb) => void;
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -107,7 +114,10 @@ export function createTinyCloudWeb(
     autoBootstrapAccount: false,
   };
 
-  return new TinyCloudWeb(tcwConfig);
+  const tcw = new TinyCloudWeb(tcwConfig);
+  const onPending = config?.onAccountSetupPending;
+  if (onPending) tcw.on("account.setup.pending", () => onPending(tcw));
+  return tcw;
 }
 
 /**
