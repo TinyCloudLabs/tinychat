@@ -15,6 +15,8 @@ export const BOTS_STRINGS = {
   messageMain: `Message ${MAIN_BOT_NAME}`,
   sendToMain: `Send to ${MAIN_BOT_NAME}`,
   modelLine: "Runs on a confidential model.",
+  mainSettings: `${MAIN_BOT_NAME} settings`,
+  backToChat: "Back to chat",
   tryAgain: "Try again",
   historyLoading: "Loading older messages…",
   historyFailed: `Couldn't load your older messages with ${MAIN_BOT_NAME}.`,

@@ -1,8 +1,10 @@
 // Main's chat, over Home: a full-height sheet on a phone, a dialog on a wider screen. Main's reply is
 // shown as plain text, never as HTML.
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { ArrowLeftIcon, SlidersHorizontalIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { ResponsiveSheet, ResponsiveSheetBody } from "@/components/ui/responsive-sheet";
 import { MAX_MESSAGE_LENGTH, SendButton, sendOnEnter, useDraft } from "./AskBox";
 import { focusSdkPrompt, useSdkPromptOpen } from "./useSdkPromptOpen";
@@ -135,6 +137,10 @@ const StandingReadsCard = lazy(() => import("./StandingReadsCard"));
 
 export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHistory, onShowHistory, notice, onReconnect, webAccess, meetings, courier, asks, newChat, earlierHistory, face = MAIN_BOT }: MainChatProps) {
   const [readSettings, setReadSettings] = useState<ReadSettings | null>(null);
+  // The settings stay mounted while the conversation shows (and the conversation while they show), so what each loads
+  // and holds is the same as when both were one list; the header button only switches which one is visible.
+  const [settings, setSettings] = useState(false);
+  useEffect(() => { if (!open) setSettings(false); }, [open]);
   const { lines, history, turn } = state;
   const working = isWorking(turn);
   // A question, a proposal or a secret request the owner has not decided: the bot waits on them.
@@ -147,9 +153,13 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
   const setDraft = composer.setDraft;
   useEffect(() => { if (!open) setDraft(""); }, [open, setDraft]);
   const end = useRef<HTMLDivElement>(null);
+  const settingsTop = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
-  }, [open, lines.length, turn?.text, turn?.reply, turn?.state, asks?.pending.length, asks?.secrets.length]);
+    if (!settings) end.current?.scrollIntoView({ block: "end" });
+  }, [settings, open, lines.length, turn?.text, turn?.reply, turn?.state, asks?.pending.length, asks?.secrets.length]);
+  useEffect(() => {
+    if (settings) settingsTop.current?.scrollIntoView({ block: "start" });
+  }, [settings]);
 
   return (
     <ResponsiveSheet
@@ -176,10 +186,20 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {MAIN_BOT.name}
         </span>
       }
-      footer={<Composer composer={composer} inputRef={composerInput} />}
+      headerActions={
+        <button
+          type="button"
+          aria-label={settings ? BOTS_STRINGS.backToChat : BOTS_STRINGS.mainSettings}
+          onClick={() => setSettings((value) => !value)}
+          className="tap-transparent flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:bg-surface-2 fine:size-9"
+        >
+          {settings ? <ArrowLeftIcon className="size-5" /> : <SlidersHorizontalIcon className="size-5" />}
+        </button>
+      }
+      footer={settings ? undefined : <Composer composer={composer} inputRef={composerInput} />}
     >
       <ResponsiveSheetBody>
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-4">
+        <div ref={settingsTop} className={cn("mx-auto w-full max-w-2xl flex-col gap-5 py-4", settings ? "flex" : "hidden")} data-bots-main-settings="">
           <p className="text-center text-callout text-muted-foreground">{BOTS_STRINGS.modelLine}</p>
           {open && webAccess ? <WebAccessToggle api={webAccess} /> : null}
           {open && meetings ? <MeetingsAccess api={meetings} onSettings={setReadSettings} /> : null}
@@ -189,6 +209,8 @@ export function MainChat({ open, onOpenChange, state, onSend, onRetry, onRetryHi
           {open && courier ? <CourierSetup /> : null}
           {open && asks ? <AsksToggle asks={asks} /> : null}
           {open && newChat ? <NewChat api={newChat} /> : null}
+        </div>
+        <div className={cn("mx-auto w-full max-w-2xl flex-col gap-5 py-4", settings ? "hidden" : "flex")}>
           {open && notice && onReconnect ? <ExpiryNotice key={`${notice.id}:${notice.deliveredAt ?? notice.renderAttemptAt ?? "initial"}`} notice={notice} onReconnect={onReconnect} /> : null}
           {onShowHistory && (history === "idle" || history === "declined") ? <div className="flex flex-col items-start gap-3 text-callout text-muted-foreground">
             {history === "declined" ? <p>Older messages stay hidden until you approve access.</p> : null}
