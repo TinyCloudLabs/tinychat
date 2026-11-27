@@ -135,6 +135,19 @@ export function missingSpacesLine(app: string, spaces: readonly string[], none: 
 }
 
 /** Courier's line when its space (agents) is missing; "Open Courier" links to Courier's own page in a new tab. */
+/**
+ * An app that runs from the owner's own space (`fromSpace`) and could not open. `reason`: the runner host's or the
+ * runner page's (runnerHost.ts, tinydrive runner/runner.js).
+ */
+export function runFailedLine(app: string, reason: string): string {
+  switch (reason) {
+    case "declined": return `${app} can't open without reading its own files in your TinyCloud.`;
+    case "not-installed": return `${app} isn't installed in your TinyCloud yet.`;
+    case "changed": return `${app}'s files in your TinyCloud changed after it was installed, so it didn't open.`;
+    default: return `${app} couldn't open. Try again later.`;
+  }
+}
+
 export const COURIER_MISSING = {
   before: "Courier starts working once you connect an agent to it. ",
   link: "Open Courier",

@@ -19,7 +19,7 @@ console.log(JSON.stringify({ kind: r.ONE_APPS_BUILD_KIND, hosts: r.ONE_HOST_ORIG
       origins: [
         "https://secrets.tinycloud.xyz",
         "https://credentials.org",
-        "https://drive.tinycloud.xyz",
+        "https://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one",
         "https://explorer.tinycloud.xyz",
         "https://account.tinycloud.xyz",
         "https://share.tinycloud.xyz",

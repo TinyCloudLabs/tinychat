@@ -91,6 +91,12 @@ export interface FramedOneApp extends ListedOneApp {
    * Unset: always listed.
    */
   listedIf?: string;
+  /**
+   * Set for an app kept in the owner's own Apps space (installed there), with no site of its own. `origin` is then
+   * its own sub-address of the one shared app runner (`<runnerSlug(id)>.<runner address>`), and One hands the runner
+   * the app's files from the space (runnerHost.ts) before the app says hello.
+   */
+  fromSpace?: true;
   ceiling(owner: OneAppOwner): readonly CeilingEntry[];
 }
 
@@ -237,8 +243,8 @@ const ALL_APPS: readonly OneApp[] = [
   },
   {
     // Drive: the owner's TinyCloud as drives, folders and files (TinyDrive). In the frame it reads, and it adds files
-    // and folders to the owner's own space. Its "Who has access" needs the owner's own sign-in, so that part opens
-    // Drive in its own tab.
+    // and folders to the owner's own space. It has no site of its own: it runs from the owner's Apps space, where its
+    // "Install in my TinyCloud" put it, through the app runner (`fromSpace`).
     id: "xyz.tinycloud.tinydrive",
     kind: "framed",
     framed: true,
@@ -248,7 +254,10 @@ const ALL_APPS: readonly OneApp[] = [
     ...text("xyz.tinycloud.tinydrive"),
     icon: Folder,
     glyph: "drive",
-    origin: KIND === "dev" ? "https://localhost:5197" : "https://drive.tinycloud.xyz",
+    fromSpace: true,
+    // Its runner sub-address: runnerSlug("xyz.tinycloud.tinydrive") (runnerSlug.test.ts). The runner's production
+    // address is not set up yet (a one-time choice); apps.tinycloud.one stands in for it.
+    origin: KIND === "dev" ? "https://guqda7cucxregwu3pgrwcq6syc.apps.localhost:5198" : "https://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one",
     path: "/",
     ceiling: () => DRIVE_CEILING,
   },

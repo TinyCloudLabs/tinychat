@@ -25,6 +25,8 @@ import { useResolvedTheme } from "../lib/theme";
 import { AppBar } from "./AppBar";
 import { EmbedHost, type EmbedTheme } from "./embedHost";
 import { frameGrantDelegate } from "./frameGrant";
+import { RunnerHost } from "./runnerHost";
+import { clampRequest, ownerSpaceId, resolveCeiling } from "./scope";
 import { AppTileIcon, type GlyphId } from "./icons";
 import { trackEmbed } from "./liveEmbeds";
 import { appUrl, framedApp, framesAppHere, frameUrl, ONE_APPS, oneAppsFor, type FramedOneApp } from "./registry";
@@ -44,6 +46,7 @@ import {
   opensSeparatelyTitle,
   stepUpFailedLine,
   type ScopeId,
+  runFailedLine,
 } from "./strings";
 
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
@@ -171,12 +174,43 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
       onError: (error) => console.warn("[One Apps] embed message failed", app.id, error),
     });
     hostRef.current = host;
-    const onMessage = (event: MessageEvent) => { void host.handle(event); };
+    // An app kept in the owner's space: the runner page at its sub-address asks for its files first (runnerHost.ts).
+    const owner = { address, chainId };
+    const appsKv = app.fromSpace ? tcw.kvForSpace(ownerSpaceId(owner, "applications")) : null;
+    const runner = app.fromSpace ? new RunnerHost({
+      app,
+      frameWindow: () => frameRef.current?.contentWindow ?? null,
+      post: (message, transfer) => frameRef.current?.contentWindow?.postMessage(message, app.origin, transfer),
+      canRead: () => {
+        const files: PermissionEntry = { service: "tinycloud.kv", space: ownerSpaceId(owner, "applications"), path: `${app.id}/app/`, actions: ["get"] };
+        if (tcw.hasPermissions([files])) return Promise.resolve(true);
+        // Ask with the app's own entry that covers its files, so its hello then gets that space with no second ask.
+        const covering = clampRequest(owner, resolveCeiling(owner, app.ceiling(owner)), [files]);
+        return covering
+          ? askThenStepUp([...new Set(covering.map((entry) => entry.scope))], covering.map((entry) => entry.permission), [])
+          : askThenStepUp(["appsData"], [files], []);
+      },
+      read: async (key) => {
+        const result = await appsKv!.get(key, { binary: true, source: "network" });
+        if (!result.ok) throw new Error(`one_run_read_failed:${result.error.code}`);
+        return result.data.data as Uint8Array;
+      },
+      failed: (reason) => {
+        setMissing(null);
+        setFailedLine(runFailedLine(app.name, reason));
+      },
+      onError: (error) => console.warn("[One Apps] runner message failed", app.id, error),
+    }) : null;
+    const onMessage = (event: MessageEvent) => {
+      void host.handle(event);
+      if (runner) void runner.handle(event);
+    };
     window.addEventListener("message", onMessage);
     const untrack = trackEmbed(() => host.close());
     return () => {
       window.removeEventListener("message", onMessage);
       untrack();
+      runner?.close();
       if (hostRef.current === host) hostRef.current = null;
       void host.close();
     };

@@ -8,7 +8,8 @@ import { joinScopes, SCOPE_PHRASES } from "./strings";
 const READ_ONLY = ["get", "list", "metadata"];
 const READ_AND_ADD = ["get", "list", "metadata", "put"];
 const OWNER = { address: "0x0000000000000000000000000000000000000001", chainId: 1 };
-const ORIGIN = "https://drive.tinycloud.xyz";
+// Drive has no site of its own: One frames it at its runner sub-address (runnerHost.ts).
+const ORIGIN = "https://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one";
 const SESSION = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 const space = (name: string) => `tinycloud:pkh:eip155:1:${OWNER.address}:${name}`;
 // What TinyDrive sends when the owner opens a drive (tinydrive web/src/drive.js embedPermissions).
@@ -183,7 +184,7 @@ describe("Drive inside One", () => {
 
   test("messages from any other origin are ignored", async () => {
     const run = host(new Set([space("applications")]), true);
-    for (const origin of ["http://drive.tinycloud.xyz", "https://drive.tinycloud.xyz.evil.example", "https://tinydrive.pages.dev", "https://localhost:5197", "https://explorer.tinycloud.xyz"]) {
+    for (const origin of ["https://drive.tinycloud.xyz", "http://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one", "https://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one.evil.example", "https://tinydrive.pages.dev", "https://localhost:5197", "https://explorer.tinycloud.xyz"]) {
       await run.send(hello, origin);
     }
     expect(run.posted).toEqual([]);

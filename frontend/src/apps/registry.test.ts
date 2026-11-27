@@ -14,7 +14,7 @@ describe("registry", () => {
     expect(framed(ONE_APPS).map((app) => app.origin)).toEqual([
       "https://secrets.tinycloud.xyz",
       "https://credentials.org",
-      "https://drive.tinycloud.xyz",
+      "https://guqda7cucxregwu3pgrwcq6syc.apps.tinycloud.one",
       "https://explorer.tinycloud.xyz",
       "https://account.tinycloud.xyz",
       "https://share.tinycloud.xyz",
