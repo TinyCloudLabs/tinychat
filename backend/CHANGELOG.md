@@ -1,5 +1,69 @@
 # @tinychat/backend
 
+## 0.14.8
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+## 0.14.8-beta.0
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+## 0.14.7
+
+### Patch Changes
+
+- ed7ff22: Keep a deleted Fireflies meeting out of the server-side import. The server holds a one-way code of the meeting ID and the delete time until the user allows those meetings back or deletes the account.
+
+  Details: TC-4414
+
+## 0.14.7-beta.0
+
+### Patch Changes
+
+- ed7ff22: Keep a deleted Fireflies meeting out of the server-side import. The server holds a one-way code of the meeting ID and the delete time until the user allows those meetings back or deletes the account.
+
+  Details: TC-4414
+
+## 0.14.6
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
+## 0.14.6-beta.0
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
+## 0.14.5
+
+### Patch Changes
+
+- 2b52dd6: Ship closed calendar auto-join tick, occurrence decision and connection state events to backend logs.
+
+  Details: TC-4406
+
+## 0.14.5-beta.0
+
+### Patch Changes
+
+- 2b52dd6: Ship closed calendar auto-join tick, occurrence decision and connection state events to backend logs.
+
+  Details: TC-4406
+
 ## 0.14.4
 
 ### Patch Changes

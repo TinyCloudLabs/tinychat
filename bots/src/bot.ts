@@ -13,6 +13,7 @@ import { BOT_ID, botIdFor, MAIN_BOT_NAME, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
+import { type TurnStep, TurnSteps } from "./turn-step";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
 import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, asksFile, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
@@ -22,7 +23,7 @@ import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionRe
 /** Where a message the app sends Main comes from: a decided question or secret request, or a decided proposal. */
 export type AppSource = { app: AppOrigin["app"] | ActionReply["decision"]; secret?: SecretLine };
 
-export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
+export type ErrorCode = "bot_unavailable" | "model_unavailable" | "turn_timeout" | "busy" | "at_capacity" | "invalid";
 
 export const MAX_TEXT = 8000;
 
@@ -30,6 +31,7 @@ export const MAX_TEXT = 8000;
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   bot_unavailable: `${MAIN_BOT_NAME} isn't available. Try again later.`,
   model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
+  turn_timeout: `${MAIN_BOT_NAME} reached the time limit for this task.`,
   busy: `${MAIN_BOT_NAME} is still working on your last message. Send this one when it replies.`,
   at_capacity: `${MAIN_BOT_NAME} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.`,
   invalid: "Messages can be up to 8,000 characters.",
@@ -39,6 +41,8 @@ export interface TurnSink {
   status(state: "starting" | "working"): void;
   delta(text: string): void;
   activity?(record: ActivityRecord): void;
+  /** What the bot is doing (turn-step.ts): a fixed id, and a page read's host. Not kept in the history. */
+  step?(step: TurnStep): void;
   done(messageId: string): void;
   error(code: ErrorCode): void;
 }
@@ -90,6 +94,10 @@ export interface SandboxLauncher {
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   /** `botName` is the name the owner sees, for the bot's prompt only; absent, the prompt uses MAIN_BOT_NAME. */
   launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
+  /** Opens a gateway meter before the bot's model calls. Telemetry failures do not affect the turn. */
+  beginTurn?(layout: BotLayout): Promise<void>;
+  /** Closes the meter after the prompt. The gateway logs once in-flight model calls settle; the supervisor does not wait. */
+  endTurn?(layout: BotLayout): Promise<void>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
@@ -134,7 +142,7 @@ export const HEARTBEAT_MS = 15_000;
 export interface BotOptions {
   /** Idle time after session_settled before the sandbox stops. */
   idleMs: number;
-  /** A turn with no prompt_result by then ends with bot_unavailable and its sandbox is killed. */
+  /** A turn with no prompt_result by then ends with turn_timeout and its sandbox is killed. */
   turnTimeoutMs: number;
   /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
   maxTurnBytes: number;
@@ -471,6 +479,7 @@ export class Bot {
       status: state => output.status(state),
       delta: text => { turnJournal?.delta(text); output.delta(text); },
       activity: record => { turnJournal?.append(record); output.activity?.(record); },
+      step: step => output.step?.(step),
       done: messageId => { turnJournal?.finishDraft({ type: "done", messageId }); output.done(messageId); },
       error: code => { turnJournal?.finishDraft({ type: "error", code }); output.error(code); },
     };
@@ -479,6 +488,7 @@ export class Bot {
     let state: "starting" | "working" = this.#sandbox ? "working" : "starting";
     sink.status(state);
     const heartbeat = setInterval(() => sink.status(state), HEARTBEAT_MS);
+    let metered = false;
     try {
       let sandbox: Sandbox;
       try {
@@ -505,6 +515,8 @@ export class Bot {
         state = "working";
         sink.status(state);
       }
+      metered = true;
+      await this.#launcher.beginTurn?.(this.layout).catch(() => {});
       if (!messenger || !sandbox.onHostToolCall) {
         await this.#turn(sandbox, promptText(text, from, date), sink);
         return;
@@ -531,6 +543,7 @@ export class Bot {
         try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { turnJournal.append({ type: "provenance", verified: false }); }
       }
+      if (metered) await this.#launcher.endTurn?.(this.layout).catch(() => {});
       this.#busy = false;
       this.#armIdle();
     }
@@ -703,8 +716,8 @@ export class Bot {
    */
   async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
     await this.#deleting;
-    // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
-    if (await this.holdsOwnerData()) return { ok: false, error: "held" };
+    // Approval names the exact stored recipients and text. Direct model-initiated
+    // messaging still checks holdsOwnerData(); this owner-approved path does not.
     const store = new ActionStore(this.layout);
     const approved = store.approve(id, binding, this.layout.ownerId);
     if (!approved.ok) return approved;
@@ -967,6 +980,7 @@ export class Bot {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const activity = new TurnActivity();
+    const steps = new TurnSteps(step => sink.step?.(step));
     const reaching = new Set<string>();
     // One recipient per turn: the first bot `message_bot` sends to. Sending to more takes the owner's tap (propose_action).
     let recipient: string | undefined;
@@ -1020,7 +1034,7 @@ export class Bot {
     const deadline = setTimeout(() => {
       if (finished) return;
       log("turn_timeout", this.layout.botId);
-      finish({ code: "bot_unavailable" });
+      finish({ code: "turn_timeout" });
       void this.#stop(sandbox);
     }, this.#options.turnTimeoutMs);
     const off = sandbox.onFrame(frame => {
@@ -1039,13 +1053,16 @@ export class Bot {
         if (separate) sink.delta("\n\n");
         separate = false;
         wroteText = true;
+        steps.wrote();
         sink.delta(event.delta);
       } else if (frame.type === "message_end") {
         if (!isRecord(frame.message) || frame.message.role !== "assistant") return;
         firstReplyAt ??= timestamp(frame.message.timestamp);
         separate = wroteText;
+        steps.messageEnded();
       } else if (frame.type === "tool_execution_start" || frame.type === "tool_execution_end") {
         activity.frame(frame);
+        steps.tool(frame);
       } else if (frame.type === "prompt_result" && frame.id === id) {
         this.#settled = frame.sessionSettled === true;
         if (frame.status === "completed") finish({ messageId: `b-${firstReplyAt ?? Date.now()}` });

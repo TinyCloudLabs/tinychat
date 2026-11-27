@@ -13,7 +13,7 @@ except the ingress:
 | Container | Privileges | Holds | Does |
 | --- | --- | --- | --- |
 | `bots-supervisor` | capability set below, no published port, no outbound network | `BOTS_SERVICE_SECRET` | internal API, starts and stops the sandboxes, talks to OMP over each sandbox's stdio |
-| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY`; the dstack socket, for the secret-request sealing key only | one Unix socket per bot for allowed model calls and a control socket for bot admission |
+| `bots-gateway` | unprivileged user, read-only, no capabilities | `REDPILL_API_KEY`; the dstack socket, for the secret-request sealing key and the approval requester key only | one Unix socket per bot for allowed model calls and a control socket for bot admission |
 | `dstack-ingress` | the backend's ingress image | `CLOUDFLARE_API_TOKEN` (DNS for the certificate) | ends TLS inside the CVM, forwards to the supervisor |
 
 Treat every sandbox as hostile: OMP has a shell, so each owner can run any code as root inside their sandbox.
@@ -71,10 +71,13 @@ Anything else gets an empty 401.
 
 - `POST /v1/bots/main/messages` `{ "text": "..." }` (1 to 8000 characters) streams `text/event-stream`:
   `status` (`starting` on a cold start, then `working`, repeated every 15 s while waiting), `delta` (assistant
-  text), then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
+  text), `step` (what the bot is doing, for the app's working line: `{ step }` from the fixed set in
+  `src/turn-step.ts`, one per tool the agent starts and `thinking` between them; a page read adds `host`, the
+  page's host name and nothing else of its address; no tool argument or output is sent),
+  then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
   second send gets `busy`. If the caller disconnects, the turn still finishes and lands in the history. A reply
   longer than `BOTS_MAX_TURN_BYTES` is cut off (the agent's turn is aborted, the stream ends with
-  `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends the same way and its sandbox is
+  `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends with `turn_timeout` and its sandbox is
   killed. A caller that stops reading gets its stream dropped once 1 MiB is queued, instead of buffering more.
 - `GET /v1/bots/main/messages` returns `{ messages: [{ id, role, text, at }] }`, newest last, at most 50. A bot
   that has never run answers `[]` without starting a sandbox; otherwise this starts the sandbox if it is stopped.
@@ -205,6 +208,9 @@ The gateway, per bot socket:
   plus `max_tokens`) is reserved against both budgets before the call. When the call ends the reservation is settled
   to the reported usage and the unused part released (a stream cut short without usage keeps the whole
   reservation; an upstream error releases it);
+- meters each supervisor bot turn from settled model calls, independently of the daily budget counter. One
+  counts-only `turn_tokens` JSON line records tokens, calls and elapsed milliseconds after the turn; if a call is
+  still in flight, its settlement is included before logging. Courier turns are not metered.
 - keeps the budget counters on its own volume (`bot-budget`, `/var/lib/bots-gateway/budget.json`), so a restart,
   including one a bot provokes, does not reset them. Each save is a temporary file, fsynced, renamed into place,
   then the directory fsynced. If a save fails (disk full, read-only volume, any error) the gateway stops serving
@@ -353,8 +359,11 @@ call and returns the reply with the value hidden.
   (`src/secret-routes.ts`). The gateway makes a fresh Ed25519 key for that request alone. It signs an OpenKey one-tap
   approval request for `tinycloud.kv/get` on `vault/secrets/<NAME>` plus `tinycloud.encryption/decrypt` on the owner's
   default network. The longest grant it allows is 1 hour (`MAX_GRANT_SECONDS`, from `MAX_GRANT_MS` in `asks.ts`; standing
-  access is a separate design), and a delegation more than 120 s longer than that is refused (OpenKey signs a real one-hour grant a few seconds over). The same key is both issuer and audience, because share-envelope 1.6.0 requires it. TC-3772
-  will let a stable TinyCloud One key sign instead (`SecretGrantDeps.requester`). The owner the supervisor names must
+  access is a separate design), and a delegation more than 120 s over that is refused (OpenKey signs a real one-hour grant a few seconds over).
+  The grant's audience is a fresh key per request, so Stop deletes only that key. The link is
+  signed by one stable TinyCloud One requester key (below), whose DID is the body's `issuer` and its
+  `requesterDid` field (share-envelope 1.7.0; `SecretGrantDeps.requester`). That DID is filled in after the first deploy
+  that carries this. A gateway without that injection signs with the grant's own key and leaves `requesterDid` out. The owner the supervisor names must
   be this bot's owner (409 otherwise). A known service's site and header must match `src/secret-catalog.ts`.
 - **Collection.** The gateway collects the result itself every 5 s. Before keeping a grant it checks:
   - the owner's SIWE signature;
@@ -365,12 +374,45 @@ call and returns the reply with the value hidden.
   The supervisor collects outcomes with `POST /bots/<id>/secrets/drain`. A decline, expiry or failure drops the
   request's key at once.
 - **Storage.** Each record is sealed with AES-256-GCM in `secret-grants/` on the gateway volume. The sealing key comes
-  from the CVM's key service (dstack `GetKey`, path `tinychat-bots/secret-seal` only, `src/dstack-key.ts`) and is
+  from the CVM's key service (dstack `GetKey`, path `tinychat-bots/secret-seal`, `src/dstack-key.ts`) and is
   never on a disk. `/var/run/dstack.sock` is mounted into `bots-gateway` only (and the ingress, as before), never the
-  supervisor, the sandboxes or `bots-fetch`. The gateway restricts itself to that one path in code, which is not a
-  boundary: TC-3773 adds a proxy that enforces it before access opens beyond Sam. Without the key service, every
-  secret route answers 503 and the secret tools aren't offered. The gateway runs as uid 65532, so the socket must be
+  supervisor, the sandboxes or `bots-fetch`. The gateway restricts itself to two paths in code (the sealing key and
+  the requester key), which is not a boundary: TC-3773 adds a proxy that enforces both ahead of access beyond Sam.
+  Without either key, every secret route answers 503 and the secret tools aren't offered. The gateway runs as uid 65532, so the socket must be
   readable by it; check this at deploy.
+- **Stable requester.** OpenKey shows who asks from the key that signs the link, so every secret request is signed by
+  one stable TinyCloud One key. The gateway asks the key service for `GetKey` on path
+  `tinychat-bots/approval-requester` (purpose `approval-requester`) and derives the Ed25519 seed as HKDF-SHA256 of
+  that key with an empty salt, info `tinychat-bots approval-requester v1`, 32 bytes (`src/dstack-key.ts`). The sealing
+  key uses another path and another info string, so neither can be derived from the other. The seed is never logged or
+  returned; the gateway prints the requester's DID once at start-up, as `{"gateway":"approval_requester","did":"did:key:..."}`.
+  The DID is the same after a restart and changes only with the app id. The real DID is added here after the first
+  deploy that carries this: `TBD (printed at start-up, not yet deployed)`. If either key can't be had, the gateway starts without secrets (the 503 above); it never signs under
+  the stable name with a per-request key.
+- **Which key signs which call.** The link, and every poll up to the owner opening it, are signed by the stable
+  requester: OpenKey checks those against the link's issuer. Once the link is loaded OpenKey checks polls against the
+  request's own grant key, and fetch and acknowledge always use that key. The gateway can't see the phase, so a poll
+  is signed by the stable key until OpenKey refuses that proof (`request_binding`); the same poll is then sent once
+  with the grant key, and that key is kept for the request (saved with it, so a restart does not go back). A request
+  is failed only when both are refused. The stable key's private JWK is held in memory only, built from the seed at
+  start-up, and is used for that one poll (`SecretGrantDeps.requesterJwk`, `#discover`).
+- **Rotating the requester key.** Rotate on a schedule the owner sets, and at once if the gateway may have been
+  compromised: anything running in the gateway can read the seed, so rotation is the response, and it also stops
+  the old DID from vouching for anything. Steps:
+  1. Add a new path constant beside `APPROVAL_REQUESTER_PATH` in `src/dstack-key.ts` (for example
+     `tinychat-bots/approval-requester-2`) with its own info string (`... approval-requester-2 v1`), switch
+     `approvalRequesterSeedFromDstack` to it, and add the path to the TC-3773 allowlist. dstack derives a different
+     key for the new path, so the DID is new.
+  2. Deploy bots. The gateway prints the new DID once at start-up (`approval_requester`).
+  3. Publish the new DID in this section and send it to OpenKey, so its table of known requesters lists "TinyCloud
+     One" under the new DID. Until OpenKey has it, links from the new DID show as not verified.
+  4. Once the old DID has no open request (a link lives about an hour, so one day is plenty), remove the old DID
+     from OpenKey's table and the old path from the allowlist.
+
+  Requests open at the switch keep their old DID in the body (`requesterDid`). The new gateway doesn't have that
+  key, so it polls them with their grant key only; OpenKey accepts that once the owner has opened the link and
+  refuses it until then, which ends such a request as failed and the owner asks anew. A deploy that rotates the key
+  is best done when no request is waiting.
 - **Stop now.** `DELETE /bots/<id>/secrets/<request id>` unlinks the sealed file and drops the gateway's in-memory
   copy (the grant and any cached TinyCloud session). Memory isn't zeroed. The volume has no backups. Until the
   DELETE lands, a request the supervisor lists as stopped, revoked, declined, expired or failed is refused anyway.
@@ -398,11 +440,11 @@ call and returns the reply with the value hidden.
 ### Proposals from Main
 
 Main can propose an action for the owner to approve with one tap; the service then does it, exactly once. The first
-kind is `message_bots`: one message to 2 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
+kind is `message_bots`: one message to 1 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
 MCP server, listed and served under the same setting as `ask_owner` (on until the owner turns it off). `message_bot` reaches one bot per
-owner message (the same bot again is fine); a message for more bots goes through a proposal.
+owner message (the same bot again is fine); a message for more bots goes through a proposal. After a private read, even a message to one bot goes through an exact owner-approved proposal. The private-data mark stays set for unapproved exports.
 
-- `propose_action { kind: "message_bots", targets, text }`: `targets` are 2 to 8 distinct keys of bots Main may
+- `propose_action { kind: "message_bots", targets, text }`: `targets` are 1 to 8 distinct keys of bots Main may
   message in this turn (never `main`), `text` is 1 to 2000 characters, kept as plain text with its lines (control,
   direction and format characters removed). A turn relayed from another bot may message no bot, so it cannot propose.
   It answers `{ id, state: "pending" }` at once. Refusals are fixed sentences (`ACTION_ERRORS` in `actions.ts`).
@@ -516,6 +558,7 @@ Gateway (`bots-gateway`):
 | `BOTS_MAX_TOKENS` | `8192` | |
 | `BOTS_BOT_DAILY_TOKENS` / `BOTS_GLOBAL_DAILY_TOKENS` | `2000000` / `20000000` | UTC day |
 | `BOTS_OWNER_DAILY_TOKENS` | `BOTS_BOT_DAILY_TOKENS` | all of one owner's bots together, UTC day |
+| `BOTS_TURN_SOFT_LIMIT` | `0` (off) | when positive, log `turn_soft_limit` once as a turn first exceeds this settled token count; never pauses or changes the reply |
 | `BOTS_MAX_BODY_BYTES` / `BOTS_MAX_RESPONSE_BYTES` | 4 MiB / 8 MiB | |
 | `BOTS_UPSTREAM_CONNECT_TIMEOUT_MS` / `BOTS_UPSTREAM_TOTAL_TIMEOUT_MS` | `30000` / `600000` | |
 | `BOTS_BODY_TIMEOUT_MS` | `30000` | request body deadline |

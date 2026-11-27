@@ -179,7 +179,9 @@ export function createBotChats(sourceFor: (key: string) => BotChatSource): BotCh
         if (event.type === "status") setTurn(key, (turn) => ({ ...turn, state: event.state }));
         else if (event.type === "delta") {
           reply += event.text;
-          setTurn(key, (turn) => ({ ...turn, state: "working", reply }));
+          setTurn(key, (turn) => ({ ...turn, state: "working", reply, step: { step: "writing" } }));
+        } else if (event.type === "step") {
+          setTurn(key, (turn) => ({ ...turn, step: { step: event.step, ...(event.host ? { host: event.host } : {}) } }));
         } else if (event.type === "activity") {
           const known = entry(key).activity;
           if (!known.some((item) => item.id === event.activity.id)) setActivity(key, [...known, { ...event.activity, after: null, inTurn: true }]);

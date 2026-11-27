@@ -1,7 +1,7 @@
 // The gateway's side of TrustBot's reads of owner data: the `app` MCP server's read tools (four meeting tools, and
-// four feed and chat tools), each area's tools offered only while the owner's setting for that area is on, and the
-// web pause that follows a read. Each call is signed to the backend, which checks the owner's grant to TrustBot's
-// read identity again before it reads anything. The gateway holds no grant and no data.
+// four feed and chat tools), offered to Main always and answered only while the owner's setting for that area is on,
+// and the web pause that follows a read. Each call is signed to the backend, which checks the owner's grant to
+// TrustBot's read identity again before it reads anything. The gateway holds no grant and no data.
 //
 // The pause: once a result from any area reaches Main's conversation, web search and page fetch are refused in that
 // conversation. The mark is saved (bot id to conversation id) before the result is returned, and a result whose mark
@@ -11,6 +11,7 @@
 
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
+import { backendCallHeaders } from "./backend-call";
 import { readBody, type UpstreamFetch } from "./gateway";
 import { FEED_CHAT_ERRORS, FEED_CHAT_RECORD_KIND, FEED_CHAT_TOOL_NAMES, FEED_CHAT_TOOLS, type FeedChatTool } from "./feed-chat-tools";
 import { isRecord } from "./guards";
@@ -28,7 +29,7 @@ export const READ_LIMIT_ERRORS = {
 } as const;
 
 export const READ_ERRORS = {
-  off: "Reading meetings is off. The owner can turn it on in this chat under Meetings.",
+  off: "Reading meetings is off. The owner can turn it on in this chat.",
   ended: "Your access to the owner's meetings has ended. They can turn it on in this chat under Meetings.",
   unavailable: "Meetings can't be read right now.",
   ...READ_LIMIT_ERRORS,
@@ -149,9 +150,19 @@ export class MeetingDesk {
     this.#settings.delete(botId);
   }
 
-  /** The tools of each area the owner's setting has on. */
+  /** The tools of each area the owner's setting has on: a Courier turn's list, and any bot's but Main's. */
   tools(botId: string, courierAreas?: readonly ReadArea[]): ReadonlyArray<{ name: string }> {
     return (courierAreas ?? this.#settings.get(botId)?.areas ?? []).flatMap(area => AREA_TOOLS[area].tools);
+  }
+
+  /**
+   * Main's list: the meeting and feed/chat tools whatever the setting, Telegram's only while it is on. An ask that needs
+   * an area that is off still reaches a call, and its `off` refusal is the turn's step that lets the app offer the owner
+   * that access at the moment of need. The call is refused as before; listing reads nothing.
+   */
+  mainTools(botId: string): ReadonlyArray<{ name: string }> {
+    const telegram = this.#settings.get(botId)?.areas.includes("telegram") ? AREA_TOOLS.telegram.tools : [];
+    return [...AREA_TOOLS.meetings.tools, ...AREA_TOOLS.feed_chats.tools, ...telegram];
   }
 
   handles(name: unknown): name is ReadToolName {
@@ -254,7 +265,7 @@ export class MeetingDesk {
       });
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(AUDIT_TIMEOUT_MS),
-        headers: { authorization, "content-type": "application/json" }, body,
+        headers: backendCallHeaders(authorization), body,
       });
       void response.body?.cancel().catch(() => {});
       if (response.status === 204) return;
@@ -273,7 +284,7 @@ export class MeetingDesk {
     try {
       const response = await this.#fetch(`${this.#options.backendOrigin}${path}`, {
         method: "POST", redirect: "error", signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
-        headers: { authorization, "content-type": "application/json" }, body,
+        headers: backendCallHeaders(authorization), body,
       });
       if (response.status !== 200 && response.status !== 400) {
         void response.body?.cancel().catch(() => {});

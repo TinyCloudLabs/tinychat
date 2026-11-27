@@ -1,10 +1,12 @@
-// TC-3792: the owner's Send on a proposal card while the chat holds the owner's meeting data. The supervisor refuses it
-// as `held` before anything is marked sending, so the proposal stays as it is; in a fresh chat the same Send goes on.
+// The owner's Send authorizes only the proposal they saw, including in a chat
+// that read private data. Its approval must be spent before anything is delivered.
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActionStore, actionBinding } from "../actions";
+import { ActionStore } from "../actions";
+import { ActionDesk } from "../actions-desk";
+import { utcDay } from "../asks";
 import { BotManager, type BotMessenger, type SandboxLauncher } from "../bot";
 import { botLayout } from "../layout";
 import { botIdFor } from "../owner";
@@ -26,30 +28,61 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function setup() {
+function setup(spendable = true) {
   const roots = { dataRoot: join(root, "data"), runRoot: join(root, "run"), egressRoot: join(root, "egress") };
+  const mainId = botIdFor(OWNER);
+  const desk = new ActionDesk(Date.now, () => mainId, () => false);
+  desk.push(mainId, { keys: [FIRST], pending: 0, day: utcDay(Date.now()), today: 0, final: [] });
+  desk.call(mainId, { kind: "message_bots", targets: [FIRST], text: TEXT });
+  const [proposal] = desk.drain(mainId);
+  expect(proposal).toBeDefined();
   const launcher: SandboxLauncher = {
     hasState: () => false, leftover: () => false, mountPoints: () => [],
     launch: async () => { throw new Error("no sandbox in this test"); },
     readsHeld: async () => held,
-    spendAction: async () => false,
+    spendAction: async (layout, id, binding) => spendable && desk.spend(layout.botId, id, binding),
   };
   const bots = new BotManager(launcher, roots, { idleMs: 60_000, turnTimeoutMs: 4_000, maxTurnBytes: 64_000 }, 3);
-  const mainId = botIdFor(OWNER);
   const layout = botLayout(mainId, roots);
-  const payload = { kind: "message_bots" as const, targets: [FIRST], text: TEXT };
-  const binding = actionBinding(layout.ownerId, mainId, payload);
-  const id = "9c41e0d2a7b3f6c18e5d2a90";
-  new ActionStore(layout).ingest([{ id, ...payload, binding, askedAt: Date.now(), outside: false }]);
-  const messenger: BotMessenger = { keys: [FIRST], dispatch: async () => ({ text: "unreachable", isError: true as const }) };
-  return { bot: bots.forOwner(OWNER), layout, id, binding, messenger, stop: () => bots.stopAll() };
+  new ActionStore(layout).ingest([proposal!]);
+  const deliveries: Array<{ key: string; text: string }> = [];
+  const messenger: BotMessenger = { keys: [FIRST], dispatch: async (key, text) => {
+    deliveries.push({ key, text });
+    return { text: "Delivered" };
+  } };
+  return { bot: bots.forOwner(OWNER), layout, id: proposal!.id, binding: proposal!.binding, messenger, deliveries, stop: () => bots.stopAll() };
 }
 
-test("a Send while the chat holds the owner's data is refused as held and the proposal stays pending", async () => {
+test("an owner-approved Send from a private chat delivers the exact proposal once", async () => {
   const run = setup();
   try {
-    expect(await run.bot.approveRequest(run.id, run.binding, run.messenger)).toEqual({ ok: false, error: "held" });
+    expect(run.deliveries).toEqual([]);
     expect(new ActionStore(run.layout).list().map(request => request.state)).toEqual(["pending"]);
+    expect((await run.bot.approveRequest(run.id, run.binding, run.messenger)).ok).toBe(true);
+    await Bun.sleep(0);
+    expect(run.deliveries).toEqual([{ key: FIRST, text: TEXT }]);
+    expect(await run.bot.approveRequest(run.id, run.binding, run.messenger)).toEqual({ ok: false, error: "not_pending" });
+    expect(new ActionStore(run.layout).list()[0]!.outcomes).toEqual([{ key: FIRST, delivered: true }]);
+    expect(await run.bot.holdsOwnerData()).toBe(true);
+  } finally { await run.stop(); }
+});
+
+test("a changed binding does not approve or send a private proposal", async () => {
+  const run = setup();
+  try {
+    expect(await run.bot.approveRequest(run.id, "0".repeat(64), run.messenger)).toEqual({ ok: false, error: "invalid" });
+    expect(run.deliveries).toEqual([]);
+    expect(new ActionStore(run.layout).list()[0]!.state).toBe("pending");
+  } finally { await run.stop(); }
+});
+
+test("an approval the gateway cannot spend sends nothing", async () => {
+  const run = setup(false);
+  try {
+    expect((await run.bot.approveRequest(run.id, run.binding, run.messenger)).ok).toBe(true);
+    await Bun.sleep(0);
+    expect(run.deliveries).toEqual([]);
+    expect(new ActionStore(run.layout).list()[0]!.outcomes).toEqual([{ key: FIRST, delivered: false }]);
   } finally { await run.stop(); }
 });
 

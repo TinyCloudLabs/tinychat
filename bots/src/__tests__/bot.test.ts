@@ -156,7 +156,7 @@ describe("turn events", () => {
       jest.advanceTimersByTime(OPTIONS.turnTimeoutMs + 1);
       await running;
       await sandbox.exited;
-      expect(events.at(-1)).toEqual(["error", "bot_unavailable"]);
+      expect(events.at(-1)).toEqual(["error", "turn_timeout"]);
     } finally {
       jest.useRealTimers();
     }

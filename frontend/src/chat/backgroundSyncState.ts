@@ -96,8 +96,7 @@ export type BackgroundSyncBusy =
   | "enabling"
   | "rotating"
   | "disabling"
-  | "syncing"
-  | "clearing-ledger";
+  | "syncing";
 
 /** The one-time pair. Lives in component state for as long as it is displayed. */
 export interface RevealedCredentials {
@@ -147,12 +146,6 @@ export interface BackgroundSyncState {
   notice: BackgroundSyncNotice | null;
   lastIngest: IngestSummary | null;
   ingestBlocked: TargetedIngestBlockedReason | null;
-  /**
-   * The user has ASKED to allow historical re-sync and is being shown what it
-   * means. `DELETE /purged` is reachable from nowhere else — see
-   * {@link confirmHistoricalResync}.
-   */
-  resyncConfirming: boolean;
 }
 
 export function initialBackgroundSyncState(): BackgroundSyncState {
@@ -168,7 +161,6 @@ export function initialBackgroundSyncState(): BackgroundSyncState {
     notice: null,
     lastIngest: null,
     ingestBlocked: null,
-    resyncConfirming: false,
   };
 }
 
@@ -188,13 +180,6 @@ export interface BackgroundSyncWebhooks {
   ): Promise<ConnectorWebhooksResult<ConnectorCredentialTeardown | null>>;
   getPending(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
   drain(): Promise<ConnectorWebhooksResult<ConnectorWebhookPending>>;
-  /**
-   * `DELETE /purged`. The ONE destructive-to-privacy call on this surface, and
-   * the only thing that lets meetings the user deleted come back. It is called
-   * from exactly one place — {@link confirmHistoricalResync} — and never as a
-   * side effect of connecting, enabling, rotating or syncing.
-   */
-  clearPurgeLedger(source: string): Promise<ConnectorWebhooksResult<null>>;
 }
 
 /**
@@ -688,7 +673,6 @@ export async function disableBackgroundSync(
     queueUnavailable: false,
     lastIngest: null,
     ingestBlocked: null,
-    resyncConfirming: false,
     notice: revokeUnconfirmed || grantRevokeUnconfirmed
       ? {
           tone: "error",
@@ -704,76 +688,6 @@ export async function disableBackgroundSync(
             "Background notifications are off. Delete the webhook in Fireflies too — the old address stops working immediately.",
           retryable: false,
         },
-  }));
-}
-
-// ── Allow historical re-sync (the ONLY ledger-clearing path) ─────────
-//
-// A "disconnect and delete all my meetings" leaves a purge tombstone on the
-// backend. That tombstone is the reason a replayed or in-flight signed delivery
-// cannot put those meetings back, and RECONNECTING MUST NOT CLEAR IT — a user
-// who deleted their history and then reconnects has not asked for the history
-// back. So clearing it is its own action, behind its own confirmation, and the
-// three functions below are the whole of it.
-
-/** Arm the confirmation. Performs no I/O — this step exists to be read. */
-export function requestHistoricalResync(
-  state: BackgroundSyncState,
-): BackgroundSyncState {
-  return { ...state, resyncConfirming: true, notice: null };
-}
-
-export function cancelHistoricalResync(
-  state: BackgroundSyncState,
-): BackgroundSyncState {
-  return { ...state, resyncConfirming: false };
-}
-
-/** The copy the confirmation shows. Kept beside the action it describes. */
-export const HISTORICAL_RESYNC_CONFIRM_COPY = {
-  heading: "Allow deleted meetings to be collected again?",
-  body:
-    "We keep a record of the meetings you deleted so a late Fireflies notification cannot bring them back. Clearing that record means any of those meetings Fireflies tells us about again WILL be collected and saved to your space. Nothing else changes, and this cannot be undone.",
-  confirmLabel: "Clear the record and allow re-sync",
-  cancelLabel: "Keep them deleted",
-} as const;
-
-/**
- * `DELETE /purged`. Refuses unless {@link requestHistoricalResync} armed it, so
- * a stray handler cannot reach the destructive call; on failure the
- * confirmation STAYS armed and nothing claims that history is available again.
- */
-export async function confirmHistoricalResync(
-  deps: BackgroundSyncDeps,
-  emit: BackgroundSyncEmit,
-): Promise<void> {
-  let armed = false;
-  emit((s) => {
-    armed = s.resyncConfirming;
-    return armed ? { ...s, busy: "clearing-ledger", notice: null } : s;
-  });
-  if (!armed) return;
-  const result = await deps.webhooks.clearPurgeLedger(deps.source);
-  if (result.status !== "ok") {
-    emit((s) => ({
-      ...s,
-      busy: null,
-      ...(result.status === "feature-dark" ? { phase: "dark" as const } : {}),
-      ...(result.status === "unauthenticated" ? { phase: "signed-out" as const } : {}),
-      notice: failureNotice(result),
-    }));
-    return;
-  }
-  emit((s) => ({
-    ...s,
-    busy: null,
-    resyncConfirming: false,
-    notice: {
-      tone: "info",
-      message:
-        "Cleared. Meetings you previously deleted can be collected again if Fireflies reports them.",
-      retryable: false,
-    },
   }));
 }
 

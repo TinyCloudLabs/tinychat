@@ -42,7 +42,7 @@ test("the service's at_capacity error event keeps its own code", async () => {
 test("the line names the bot, and Main when no name is given", () => {
   expect(botsErrorText("at_capacity")).toBe(LINE);
   expect(botsErrorText("at_capacity", "Scout")).toStartWith("Scout can't start right now");
-  expect(botsErrorText("bot_unavailable")).toBe("TrustBot couldn't start.");
+  expect(botsErrorText("bot_unavailable")).toBe("TrustBot can't be reached right now.");
 });
 
 function Harness({ api, sent }: { api: BotsApi; sent: string[] }) {

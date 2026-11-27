@@ -1,5 +1,5 @@
 // Main proposing an action (`propose_action`) for its owner to approve on a card. The first kind is one message to
-// two or more of the owner's other bots. The gateway takes the box's call, checks it, gives it an id and binds it to
+// one or more of the owner's other bots. The gateway takes the box's call, checks it, gives it an id and binds it to
 // the owner, the bot, the kind, the recipients and the text; the supervisor collects it into `actions.json`, beside
 // the requests of `ask_owner` and outside anything a sandbox mounts. Only the owner's tap on the card approves it, and
 // the owner's tap names the binding of what the card showed. The supervisor then has the gateway spend the approval
@@ -17,7 +17,7 @@ import { isBotKey, MAIN_KEY } from "./owner";
 
 export const ACTION_KINDS = ["message_bots"] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
-export const MIN_TARGETS = 2;
+export const MIN_TARGETS = 1;
 export const MAX_TARGETS = 8;
 export const MAX_ACTION_TEXT = 2000;
 export const MAX_PENDING_ACTIONS = 3;
@@ -39,7 +39,6 @@ export const ACTION_ERRORS = {
   final: "The owner already declined this, or it expired. Don't propose it again, reword it or send it bot by bot.",
   pending: "Too many open requests for now. Carry on without proposing.",
   daily: "You've made enough requests for today. Carry on without proposing.",
-  held: "Proposing a message to another bot is paused in this chat because it holds the owner’s private data. It stays paused until the owner starts a new chat.",
 } as const;
 
 const listKeys = (keys: readonly string[]): string => keys.length < 2 ? keys.join("") : `${keys.slice(0, -1).join(", ")} and ${keys.at(-1)}`;
@@ -207,8 +206,8 @@ export interface ActionReply {
 
 export type ActionResult = { ok: true; request: ActionRequest } | { ok: false; error: "not_pending" | "invalid" };
 
-/** The owner's Send: also refused while the chat holds the owner's private data, before anything is marked sending. */
-export type ApproveResult = ActionResult | { ok: false; error: "held" };
+/** The owner's Send approves only the stored payload named by the card's binding. */
+export type ApproveResult = ActionResult;
 
 /** The owner's tap on Send: `{ decision: "approve", binding }`, and the recipients the backend admits for Main's turn. */
 export function parseApproveInput(input: unknown): { binding: string; keys: unknown } | undefined {

@@ -22,6 +22,13 @@ export const FEED_CARD_LINK_COPY = {
   dismiss: "Dismiss",
 } as const;
 
+/** The Feed's note when its live-update stream has failed: "offline" only when the browser says it is. */
+export function liveUpdatesOff(online: boolean): { lead: string; text: string } {
+  return online
+    ? { lead: "Live updates are off.", text: "These cards may be out of date." }
+    : { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." };
+}
+
 /** Settings → card.md: the owner's note on how agents make cards for their Feed. `{version}` and `{time}` are filled in. */
 export const CARD_MD_STRINGS = {
   title: "card.md",

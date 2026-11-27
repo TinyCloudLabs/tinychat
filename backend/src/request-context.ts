@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, randomUUID } from "node:crypto";
 import type { Express, NextFunction, Request, RequestHandler, Response } from "express";
 import type { FailureCause, ReplyOutcome } from "./billing/settle.js";
+import type { CalendarAutojoinLogEvent } from "./services/calendar-autojoin-log-events.js";
 
 // Legacy Private/hosted correlation headers intentionally keep their existing broader UUID syntax.
 const LEGACY_CORRELATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -108,6 +109,15 @@ export function requestLogAccountHash(address: string, at: Date = new Date()): s
   if (!accountHashKey) return undefined;
   const month = at.toISOString().slice(0, 7);
   return createHmac("sha256", accountHashKey).update(`account\0${month}\0${address.toLowerCase()}`).digest("hex");
+}
+
+/** hex(HMAC-SHA256(key, "calendar-invite\0" || UTC "YYYY-MM" of `at` || "\0" || lowercase address)): the same key under a
+ * separate label, so it differs from the account pseudonym and links only to other invite decisions of the same month.
+ */
+export function requestLogInviteHash(address: string, at: Date = new Date()): string | undefined {
+  if (!accountHashKey) return undefined;
+  const month = at.toISOString().slice(0, 7);
+  return createHmac("sha256", accountHashKey).update(`calendar-invite\0${month}\0${address.toLowerCase()}`).digest("hex");
 }
 
 /** The shipped record carries only the order of magnitude of a request's credits. */
@@ -309,7 +319,7 @@ export function parseRequestIdFirstPartyOrigins(value: string | undefined): Read
   return origins;
 }
 
-function emitToStdout(event: RequestEvent): void {
+export function emitToStdout(event: RequestEvent | CalendarAutojoinLogEvent): void {
   // Only this typed projection bypasses the request output boundary.
   context.exit(() => process.stdout.write(JSON.stringify(event) + "\n"));
 }
