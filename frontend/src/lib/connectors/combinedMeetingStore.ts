@@ -489,6 +489,29 @@ export async function deleteCombinedReferencing(
   return { ok: true, data: { deletedIds: hits.map((h) => h.id), unverifiedIds } };
 }
 
+/**
+ * Read-only twin of `deleteCombinedReferencing`: how many combined meetings list this member
+ * (`count`) and how many rows have members that cannot be read (`unverified`). Deletes nothing.
+ */
+export async function countCombinedReferencing(
+  tcw: TinyCloudWeb,
+  source: string,
+  sourceId: string,
+): Promise<StoreResult<{ count: number; unverified: number }>> {
+  const rows = await sql(tcw, "query", "SELECT id, source_id, metadata FROM connector_meeting WHERE source = 'exo-merged'", []);
+  if (!rows.ok) return rows;
+  let count = 0;
+  let unverified = 0;
+  for (const r of rows.rows) {
+    const sid = asString(r[1]);
+    if (asString(r[0]) === null || sid === null) continue;
+    const members = await membersOf(tcw, sid, r[2]);
+    if (members === null) unverified++;
+    else if (members.some((m) => m.source === source && m.sourceId === sourceId)) count++;
+  }
+  return { ok: true, data: { count, unverified } };
+}
+
 // ═══ 6. SWEEP (read-time repair for deletes made outside this client) ════════════════════════
 
 export type SweepOutcome =
