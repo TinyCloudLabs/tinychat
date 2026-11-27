@@ -90,10 +90,13 @@ function audio(bytes: number): Uint8Array {
   return out;
 }
 
-/** Lets the server and the background submit run until `condition` holds: event-loop turns, not wall-clock time. */
+/** Lets the server and the background submit run until `condition` holds or a real deadline passes. */
 async function until(condition: () => boolean, what: string): Promise<void> {
-  for (let i = 0; i < 20_000 && !condition(); i++) await new Promise<void>((resolve) => setImmediate(resolve));
-  if (!condition()) throw new Error(`timed out waiting for ${what}`);
+  const deadline = Date.now() + 3_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 async function setup(answer: Answer = healthy) {
