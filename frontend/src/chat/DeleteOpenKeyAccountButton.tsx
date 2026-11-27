@@ -77,7 +77,7 @@ export function DeleteOpenKeyAccountButton(props: {
     setState({ phase: "working" });
     const cleared = await webhooks.clearDeleted("fireflies");
     if (cleared.status !== "ok") {
-      setState({ phase: "blocked", message: "Couldn't clear your deleted Fireflies meeting list. Try again.", retryable: true, stage: "deleted" });
+      setState({ phase: "blocked", message: "Couldn’t clear your list of deleted Fireflies meetings. Please retry.", retryable: true, stage: "deleted" });
       return;
     }
     await open();

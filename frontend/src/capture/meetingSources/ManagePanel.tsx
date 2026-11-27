@@ -1,8 +1,6 @@
-// What "Manage" opens on a connected source. For Fireflies that is Instant
-// updates (the background-notification webhook), Bring back deleted meetings
-// and Disconnect; every other source gets Disconnect alone. The rules all live
-// in `chat/backgroundSyncState.ts` — this file renders the state it reports and
-// hands intent back, exactly as `BackgroundSyncView` does for the flag-off page.
+// The Meeting sources Manage panel for Fireflies instant updates and disconnection.
+// Source deletion controls are passed in by the parent so they remain available when webhooks are off.
+import type { ReactNode } from "react";
 import { CircleAlertIcon, CopyIcon } from "lucide-react";
 
 import {
@@ -54,7 +52,7 @@ export interface FirefliesManageProps {
   onCopy: (value: string) => void;
   onSync: () => void;
   onRetry: () => void;
-  onBringBack: () => void;
+  allowBack?: ReactNode;
   onDisconnect: () => void;
   /** A sync this window started is still running: Disconnect waits for it. */
   syncing?: boolean;
@@ -186,17 +184,7 @@ export function FirefliesManage(props: FirefliesManageProps) {
         </ul>
       )}
 
-      {!dark && (
-        <OptionRow title="Bring back deleted meetings">
-          <LinkButton chevron disabled={busy} onClick={props.onBringBack}>
-            Allow deleted Fireflies meetings back
-          </LinkButton>
-          {!state.resyncConfirming && <p className="ms-opt-text">
-            Meetings you deleted here are collected again if {connectorName} reports them. You are
-            asked first.
-          </p>}
-        </OptionRow>
-      )}
+      {props.allowBack}
 
       <DisconnectRow name={connectorName} onDisconnect={props.onDisconnect} syncing={props.syncing} />
     </>

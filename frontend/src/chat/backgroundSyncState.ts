@@ -733,8 +733,8 @@ export function cancelHistoricalResync(
 export const HISTORICAL_RESYNC_CONFIRM_COPY = {
   heading: "Allow deleted Fireflies meetings back?",
   body:
-    "We keep a record of the meetings you deleted so a late Fireflies notification cannot bring them back. Clearing that record means any of those meetings Fireflies tells us about again WILL be collected and saved to your space. Nothing else changes, and this cannot be undone.",
-  confirmLabel: "Clear the record and allow re-sync",
+    "We keep a list of the Fireflies meetings you deleted, so a sync doesn’t bring them back. If you clear it, a sync can bring those meetings back. This can’t be undone.",
+  confirmLabel: "Allow them back",
   cancelLabel: "Keep them deleted",
 } as const;
 
@@ -771,7 +771,7 @@ export async function confirmHistoricalResync(
     notice: {
       tone: "info",
       message:
-        "Cleared. Meetings you previously deleted can be collected again if Fireflies reports them.",
+        "Cleared. Meetings you deleted can come back if Fireflies reports them.",
       retryable: false,
     },
   }));

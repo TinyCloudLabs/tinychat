@@ -8,13 +8,9 @@ import { PlugIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import {
-  HISTORICAL_RESYNC_CONFIRM_COPY,
-  cancelHistoricalResync,
-  confirmHistoricalResync,
   disableBackgroundSync,
   dismissReveal,
   enableBackgroundSync,
-  requestHistoricalResync,
   rotateCredentials,
   supportsBackgroundNotifications,
 } from "@/chat/backgroundSyncState";
@@ -268,6 +264,8 @@ export function MeetingSourcesDialog({
               manage={
                 d.id === "fireflies" ? (
                   <FirefliesManagePanel
+                    backendUrl={backendUrl}
+                    sessionStore={sessionStore}
                     tcw={tcw}
                     descriptor={d}
                     connection={connection ?? null}
@@ -406,6 +404,8 @@ export function MeetingSourcesDialog({
 
 function FirefliesManagePanel({
   tcw,
+  backendUrl,
+  sessionStore,
   descriptor,
   connection,
   webhooks,
@@ -417,6 +417,8 @@ function FirefliesManagePanel({
   onDisconnect,
 }: {
   tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
   descriptor: ConnectorDescriptor;
   connection: ConnectorConnection | null;
   webhooks: ReturnType<typeof createConnectorWebhooksClient>;
@@ -433,14 +435,22 @@ function FirefliesManagePanel({
   const [rotateOpen, setRotateOpen] = useState(false);
   const [rotating, setRotating] = useState(false);
   const rotateOpener = useRef<HTMLElement | null>(null);
+  const allowBack = (
+    <div className="ms-opt">
+      <div className="ms-opt-copy">
+        <GranolaAllowBack source="fireflies" buttonClassName="ms-btn2 ms-btn-wrap" note="After this, Fireflies syncs can bring back meetings you deleted." noteClassName="ms-opt-text mt-2" tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore} />
+      </div>
+    </div>
+  );
 
   if (!supportsBackgroundNotifications(descriptor, connection)) {
-    return <DisconnectRow name={descriptor.name} syncing={syncing} onDisconnect={onDisconnect} />;
+    return <>{allowBack}<DisconnectRow name={descriptor.name} syncing={syncing} onDisconnect={onDisconnect} /></>;
   }
 
   return (
     <>
       <FirefliesManage
+        allowBack={allowBack}
         connectorName={descriptor.name}
         state={state}
         consentVariant={sync.consentVariant}
@@ -464,7 +474,6 @@ function FirefliesManagePanel({
         onCopy={copyToClipboard}
         onSync={() => void sync.runSync()}
         onRetry={sync.retry}
-        onBringBack={() => emit(requestHistoricalResync)}
         onDisconnect={onDisconnect}
         syncing={syncing}
       />
@@ -487,31 +496,6 @@ function FirefliesManagePanel({
           document.querySelector<HTMLElement>("[data-reveal-done]") ?? rotateOpener.current
         }
         testId="confirm-rotate"
-      />
-      <ConfirmDialog
-        open={state.resyncConfirming}
-        title={HISTORICAL_RESYNC_CONFIRM_COPY.heading}
-        message={HISTORICAL_RESYNC_CONFIRM_COPY.body}
-        keepLabel={HISTORICAL_RESYNC_CONFIRM_COPY.cancelLabel}
-        dropLabel={HISTORICAL_RESYNC_CONFIRM_COPY.confirmLabel}
-        busy={state.busy === "clearing-ledger"}
-        error={state.notice?.tone === "error" ? state.notice.message : null}
-        onKeep={() => emit(cancelHistoricalResync)}
-        onDrop={() => void confirmHistoricalResync({
-          ...deps,
-          webhooks: {
-            ...deps.webhooks,
-            clearPurgeLedger: async (source) => {
-              const recorded = await webhooks.clearDeleted(source);
-              if (recorded.status !== "ok") return recorded;
-              const ledger = await deps.webhooks.clearPurgeLedger(source);
-              if (ledger.status !== "ok") return ledger;
-              const cleared = await connectorStore.clearDeletedMeetings(tcw, "fireflies").catch(() => null);
-              return cleared?.ok ? ledger : { status: "retryable" as const, httpStatus: 503, code: "deleted_meetings_clear_failed" };
-            },
-          },
-        }, emit)}
-        testId="confirm-bring-back"
       />
     </>
   );

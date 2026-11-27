@@ -43,7 +43,7 @@ export const GRANOLA_CSV_STRINGS = {
 export const GRANOLA_RESYNC_CONFIRM = {
   heading: "Allow deleted Granola meetings back?",
   body:
-    "We keep a list of the Granola meetings you deleted, so an import doesn't bring them back. If you clear it, any of those meetings in a CSV you upload are imported again. This can't be undone.",
+    "We keep a list of the Granola meetings you deleted, so an import doesn’t bring them back. If you clear it, a CSV you upload can bring those meetings back. This can’t be undone.",
   confirmLabel: "Allow them back",
   cancelLabel: "Keep them deleted",
 } as const;
