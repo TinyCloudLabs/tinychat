@@ -67,7 +67,8 @@ describe("Drive inside One", () => {
   test("the ask card names each drive in plain words", () => {
     expect(drive.ceiling(OWNER).map(({ scope }) => scope)).toEqual(["appsData", "ownFiles", "agentsData"]);
     expect(joinScopes(["ownFiles"])).toBe(SCOPE_PHRASES.ownFiles);
-    expect(SCOPE_PHRASES.ownFiles).toContain("read them and add new ones");
+    // `put` can replace a record with the same name: the card must say so, not only "add"
+    expect(SCOPE_PHRASES.ownFiles).toContain("read them, add new ones and replace existing ones");
     expect(SCOPE_PHRASES.ownFiles).not.toContain("read only");
     expect(SCOPE_PHRASES.agentsData).toContain("read only");
   });

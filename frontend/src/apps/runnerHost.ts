@@ -41,6 +41,7 @@ const TYPES: Record<string, string> = {
 const INSTALL_RECORDS = new Set(["app/release.json", "app/install.json"]);
 const MAX_FILES = 500;
 const MAX_BYTES = 95 * 1024 * 1024;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 export const runFileType = (path: string) => TYPES[path.slice(path.lastIndexOf(".") + 1).toLowerCase()] ?? "application/octet-stream";
 
@@ -73,8 +74,10 @@ export async function runnerSlug(appId: string): Promise<string> {
 export type AppsReader = (key: string) => Promise<Uint8Array>;
 
 /**
- * The app's files from the owner's Apps space: `<id>/app/install.json` must exist (the install finished),
- * `<id>/app/release.json` lists every file with its SHA-256, and each `app/` file must match. Throws `RunAppError`.
+ * The app's files from the owner's Apps space: `<id>/app/install.json` must exist (the install finished) and name
+ * the release by its fingerprint (`release_sha256` = SHA-256 of the release's `files` list, as the app's install writes
+ * it last), so a half-finished update never runs. `<id>/app/release.json` lists every file with its SHA-256 and size,
+ * and each `app/` file must match both. Throws `RunAppError`.
  */
 export async function readInstalledApp(read: AppsReader, appId: string): Promise<{ entry: string; files: RunFile[] }> {
   const json = async (key: string, reason: RunAppError["reason"]) => {
@@ -90,28 +93,37 @@ export async function readInstalledApp(read: AppsReader, appId: string): Promise
       throw new RunAppError("bad-release", "json");
     }
   };
-  await json(`${appId}/app/install.json`, "not-installed");
+  const install = await json(`${appId}/app/install.json`, "not-installed") as { release_sha256?: unknown } | null;
+  if (!install || typeof install !== "object" || typeof install.release_sha256 !== "string" || !SHA256.test(install.release_sha256)) {
+    throw new RunAppError("not-installed", "install");
+  }
   const release = await json(`${appId}/app/release.json`, "not-installed") as { app_id?: unknown; entry?: unknown; files?: unknown };
   if (!release || release.app_id !== appId || typeof release.entry !== "string" || !release.entry.startsWith("app/")) throw new RunAppError("bad-release");
   if (!release.files || typeof release.files !== "object") throw new RunAppError("bad-release", "files");
   const entry = release.entry.slice(4);
-  const listed = Object.entries(release.files as Record<string, { sha256?: unknown }>)
+  const listed = Object.entries(release.files as Record<string, { sha256?: unknown; size?: unknown }>)
     .filter(([path]) => path.startsWith("app/") && !INSTALL_RECORDS.has(path));
   if (!PATH.test(entry) || listed.length === 0 || listed.length > MAX_FILES) throw new RunAppError("bad-release", "list");
+  // Every file declares its size; the declared total is checked before any file is read.
+  let declared = 0;
+  for (const [path, want] of listed) {
+    if (!PATH.test(path.slice(4)) || typeof want?.sha256 !== "string" || !SHA256.test(want.sha256)
+      || typeof want.size !== "number" || !Number.isSafeInteger(want.size) || want.size < 0) throw new RunAppError("bad-release", path);
+    declared += want.size;
+  }
+  if (declared > MAX_BYTES) throw new RunAppError("bad-release", "size");
+  // The install record names this release: else an update wrote new files and a new release but never finished.
+  if ((await sha256Hex(new TextEncoder().encode(JSON.stringify(release.files)))) !== install.release_sha256) throw new RunAppError("changed", "release");
   const files: RunFile[] = [];
-  let total = 0;
   for (const [path, want] of listed) {
     const relative = path.slice(4);
-    if (!PATH.test(relative) || typeof want?.sha256 !== "string") throw new RunAppError("bad-release", path);
     let bytes: Uint8Array;
     try {
       bytes = await read(`${appId}/${path}`);
     } catch {
       throw new RunAppError("unreadable", path);
     }
-    if ((await sha256Hex(bytes)) !== want.sha256) throw new RunAppError("changed", path);
-    total += bytes.byteLength;
-    if (total > MAX_BYTES) throw new RunAppError("bad-release", "size");
+    if (bytes.byteLength !== want.size || (await sha256Hex(bytes)) !== want.sha256) throw new RunAppError("changed", path);
     files.push({ path: relative, type: runFileType(relative), body: bytes.slice().buffer as ArrayBuffer });
   }
   if (!files.some((file) => file.path === entry)) throw new RunAppError("bad-release", "entry");
@@ -136,8 +148,18 @@ export interface RunnerHostDeps {
 export class RunnerHost {
   private closed = false;
   private busy = false;
+  private handedOver = false;
 
   constructor(private readonly deps: RunnerHostDeps) {}
+
+  /**
+   * True once One checked the app's files and handed them to the runner for the runner's latest ready. Until then the
+   * frame is the runner page, so One answers no app hello from it (FramedAppScreen): a frame that runs anything else
+   * (an old cached copy, a failed check) gets no grant.
+   */
+  get launched(): boolean {
+    return this.handedOver && !this.closed;
+  }
 
   handle(event: IncomingMessage): Promise<void> {
     if (this.closed || !this.deps.app.fromSpace || event.origin !== this.deps.app.origin) return Promise.resolve();
@@ -146,11 +168,13 @@ export class RunnerHost {
     const data = event.data as { v?: unknown; type?: unknown; nonce?: unknown; reason?: unknown } | null;
     if (!data || typeof data !== "object" || data.v !== RUN_VERSION || typeof data.nonce !== "string" || !NONCE.test(data.nonce)) return Promise.resolve();
     if (data.type === "tc-run/failed") {
+      this.handedOver = false;
       this.deps.failed(typeof data.reason === "string" ? data.reason.slice(0, 200) : "unknown");
       return Promise.resolve();
     }
     if (data.type !== "tc-run/ready" || this.busy) return Promise.resolve();
     this.busy = true;
+    this.handedOver = false;
     return this.handOver(data.nonce).catch((error: unknown) => this.deps.onError?.(error)).finally(() => { this.busy = false; });
   }
 
@@ -173,5 +197,6 @@ export class RunnerHost {
     }
     if (this.closed) return;
     this.deps.post({ v: 1, type: "tc-run/files", nonce, appId: this.deps.app.id, entry: app.entry, files: app.files }, app.files.map((file) => file.body));
+    this.handedOver = true;
   }
 }

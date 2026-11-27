@@ -37,7 +37,8 @@ export const SCOPE_PHRASES = {
   capabilityList: "the list of access it already has",
   credentials: "your credentials",
   appsData: "the data your apps keep in TinyCloud",
-  ownFiles: "the files in your own space, to read them and add new ones",
+  // Adding a record can also replace one with the same name (the node has no add-only right), so the card says so.
+  ownFiles: "the files in your own space, to read them, add new ones and replace existing ones",
   agentsData: "what your agents keep in TinyCloud, read only",
   publicSpace: "your public space",
   secretNames: "the names of your secrets and variables, not their values",

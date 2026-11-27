@@ -216,7 +216,8 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
       onError: (error) => console.warn("[One Apps] runner message failed", app.id, error),
     }) : null;
     const onMessage = (event: MessageEvent) => {
-      void host.handle(event);
+      // An app run from the space gets an answer only after One checked its files and handed them over.
+      if (!runner || runner.launched) void host.handle(event);
       if (runner) void runner.handle(event);
     };
     window.addEventListener("message", onMessage);

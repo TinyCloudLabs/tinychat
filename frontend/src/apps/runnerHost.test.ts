@@ -24,7 +24,8 @@ async function installed(appId = "xyz.tinycloud.tinydrive", change?: (records: M
     release.files[path] = { sha256: await sha(bytes), size: bytes.length };
   }
   records.set(`${appId}/app/release.json`, enc(JSON.stringify(release)));
-  records.set(`${appId}/app/install.json`, enc(JSON.stringify({ files: 5 })));
+  // As the install writes it last: the fingerprint of the release's file list.
+  records.set(`${appId}/app/install.json`, enc(JSON.stringify({ files: 5, release_sha256: await sha(enc(JSON.stringify(release.files))) })));
   change?.(records);
   const reads: string[] = [];
   const read = async (key: string) => {
@@ -75,6 +76,41 @@ describe("readInstalledApp", () => {
     await expect(readInstalledApp(read, "xyz.tinycloud.tinydrive")).rejects.toMatchObject({ reason: "changed" });
   });
 
+  test("an install record that names no release, or another release, does not run (an update that never finished)", async () => {
+    for (const record of ["null", "{}", JSON.stringify({ release_sha256: "abc" })]) {
+      const { read } = await installed(undefined, (records) => records.set("xyz.tinycloud.tinydrive/app/install.json", enc(record)));
+      await expect(readInstalledApp(read, "xyz.tinycloud.tinydrive")).rejects.toMatchObject({ reason: "not-installed" });
+    }
+    // An update stored a new app.js and a new release record, then stopped before its install record
+    const half = await installed(undefined, (records) => {
+      const next = enc("console.log('v2')");
+      records.set("xyz.tinycloud.tinydrive/app/app.js", next);
+      const release = JSON.parse(new TextDecoder().decode(records.get("xyz.tinycloud.tinydrive/app/release.json")!));
+      release.files["app/app.js"] = { sha256: "", size: next.length };
+      records.set("xyz.tinycloud.tinydrive/app/release.json", enc(JSON.stringify(release)));
+    });
+    const release = JSON.parse(new TextDecoder().decode(half.records.get("xyz.tinycloud.tinydrive/app/release.json")!));
+    release.files["app/app.js"].sha256 = await sha(half.records.get("xyz.tinycloud.tinydrive/app/app.js")!);
+    half.records.set("xyz.tinycloud.tinydrive/app/release.json", enc(JSON.stringify(release)));
+    await expect(readInstalledApp(half.read, "xyz.tinycloud.tinydrive")).rejects.toMatchObject({ reason: "changed" });
+  });
+
+  test("every file declares its size and must match it; a release declaring too much is refused before any file is read", async () => {
+    const edit = (change: (files: Record<string, { sha256: string; size: unknown }>) => void) => (records: Map<string, Uint8Array>) => {
+      const release = JSON.parse(new TextDecoder().decode(records.get("xyz.tinycloud.tinydrive/app/release.json")!));
+      change(release.files);
+      records.set("xyz.tinycloud.tinydrive/app/release.json", enc(JSON.stringify(release)));
+    };
+    const missing = await installed(undefined, edit((files) => { delete files["app/app.js"].size; }));
+    await expect(readInstalledApp(missing.read, "xyz.tinycloud.tinydrive")).rejects.toMatchObject({ reason: "bad-release" });
+    const huge = await installed(undefined, edit((files) => { files["app/app.js"].size = 200 * 1024 * 1024; }));
+    await expect(readInstalledApp(huge.read, "xyz.tinycloud.tinydrive")).rejects.toMatchObject({ reason: "bad-release" });
+    expect(huge.reads.filter((key) => !key.endsWith(".json"))).toEqual([]);
+    // A file longer than its release says, with the right fingerprint for the list: refused
+    const longer = await installed(undefined, (records) => records.set("xyz.tinycloud.tinydrive/app/app.js", enc("console.log('hi') ")));
+    await expect(readInstalledApp(longer.read, "xyz.tinycloud.tinydrive")).rejects.toMatchObject({ reason: "changed" });
+  });
+
   test("a release record for another app, or with a path that climbs out, does not run", async () => {
     const other = await installed("xyz.tinycloud.other");
     other.records.set("xyz.tinycloud.tinydrive/app/install.json", enc("{}"));
@@ -116,6 +152,22 @@ describe("RunnerHost", () => {
     expect(posted).toHaveLength(1);
     expect(posted[0].message).toMatchObject({ v: 1, type: "tc-run/files", nonce: "BBBBBBBBBBBBBBBBBBBBBB", appId: "xyz.tinycloud.tinydrive", entry: "index.html" });
     expect(posted[0].transfer).toHaveLength(posted[0].message.files.length);
+  });
+
+  test("launched only after One checked and handed over the files: not before, not after a failure, not after close", async () => {
+    const { runner } = await host();
+    expect(runner.launched).toBe(false);
+    await runner.handle(ready());
+    expect(runner.launched).toBe(true);
+    await runner.handle({ origin: drive.origin, source: frame, data: { v: 1, type: "tc-run/failed", nonce: "AAAAAAAAAAAAAAAAAAAAAA", reason: "files not stored" } });
+    expect(runner.launched).toBe(false);
+    await runner.handle(ready("CCCCCCCCCCCCCCCCCCCCCC"));
+    expect(runner.launched).toBe(true);
+    runner.close();
+    expect(runner.launched).toBe(false);
+    const refused = await host(drive, false);
+    await refused.runner.handle(ready());
+    expect(refused.runner.launched).toBe(false);
   });
 
   test("only the app's exact origin, from its own frame, with a well-formed nonce", async () => {
