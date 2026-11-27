@@ -280,5 +280,46 @@ export {
 // ── Notetaker meeting links ──────────────────────────────────────────
 export { meetingLinkFromInput } from "./meeting-link.js";
 
+// ── Calendar linking ─────────────────────────────────────────────────
+export {
+  CALENDAR_LINK_EARLY_START_MS,
+  CALENDAR_LINK_EVENT_FIELDS,
+  CALENDAR_LINK_KEY,
+  CALENDAR_LINK_LATE_START_MS,
+  CALENDAR_LINK_MAX_CANDIDATES,
+  CALENDAR_LINK_MAX_INVITEES,
+  CALENDAR_LINK_MIN_OVERLAP,
+  ambiguousCalendarLink,
+  calendarEventConference,
+  calendarLinkInviteeNames,
+  calendarLinkState,
+  calendarMeetEvent,
+  calendarOccurrenceKey,
+  linkableCalendarEvent,
+  linkedCalendarLink,
+  matchCalendarEvent,
+  normalizeGoogleMeetUrl,
+  normalizeMeetCode,
+  normalizeZoomMeetingId,
+  parseCalendarInstant,
+  parseCalendarLink,
+  refreshedCalendarLink,
+  unlinkedCalendarLink,
+  type CalendarEventMatch,
+  type CalendarInviteeResponse,
+  type CalendarLink,
+  type CalendarLinkCandidate,
+  type CalendarLinkConference,
+  type CalendarLinkInvitee,
+  type CalendarLinkMatch,
+  type CalendarLinkState,
+  type CalendarNote,
+  type EligibleCalendarEvent,
+  type GoogleCalendarAttendee,
+  type GoogleCalendarEvent,
+  type GoogleCalendarEventTime,
+  type LinkableCalendarEvent,
+} from "./calendar-link.js";
+
 // ── TinyCloud node hosts ─────────────────────────────────────────────
 export { sameTinyCloudNode } from "./tinycloud-node.js";

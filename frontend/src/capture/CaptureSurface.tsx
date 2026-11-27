@@ -51,6 +51,8 @@ import { RecentNotePendingSheet } from "./library/RecentNotePendingSheet";
 import { VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { useLibrary } from "./library/useLibrary";
 import { chatComplete } from "@/lib/meetingSummary/summaryChat";
+import { calendarLinkRunner, MEET_RETENTION_MS } from "@/lib/calendarLink/linkRunner";
+import { getGmeetLastRun, onGmeetLastRun } from "@/lib/connectors/gmeetLastRun";
 import { createSummaryRunner } from "@/lib/meetingSummary/summaryRunner";
 import type { GenerateDeps } from "@/lib/meetingSummary/generateSummary";
 import { chatReadings } from "@/lib/speakerNaming/namingChat";
@@ -148,6 +150,30 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
     });
     return () => { stop(); naming.cancelAll(); };
   }, [naming]);
+  // The space's calendar link runner, shared with Settings (none in a build without calendar linking). It is asked
+  // about a note of any source whenever one changes and, by the note's page, when one is opened. Leaving this
+  // surface stops the asking and nothing else: a backfill Settings started goes on.
+  const calendarLinks = useMemo(() => calendarLinkRunner({ tcw, backendUrl, sessionStore }), [tcw, backendUrl, sessionStore]);
+  useEffect(() => {
+    if (calendarLinks === undefined) return;
+    return captureEvents.on("library-changed", (detail) => {
+      if (detail) calendarLinks.consider(detail.source, detail.sourceId);
+    });
+  }, [calendarLinks]);
+  // A Google Meet sync brings meetings in without a change per row. Each time a run of this account has saved
+  // its meetings, and again when its Notes have settled, the notes of the sync's window are linked: one backfill
+  // per publication, which costs one settings read while linking is not connected.
+  useEffect(() => {
+    if (calendarLinks === undefined) return;
+    let seen = getGmeetLastRun(tcw);
+    return onGmeetLastRun(() => {
+      const run = getGmeetLastRun(tcw);
+      // Another account's run, or this one's connection cleared: nothing was brought in here.
+      if (run === seen) return;
+      seen = run;
+      if (run !== null) void calendarLinks.backfill({ since: Date.now() - MEET_RETENTION_MS - 24 * 60 * 60_000 });
+    });
+  }, [calendarLinks, tcw]);
   const openActivityNote = useCallback((id: string) => navigate(PATHS.library + "/" + id), [navigate]);
   const location = useLocation();
   const nav = useNavKind();
@@ -414,6 +440,7 @@ function CaptureSurfaceBody({ tcw, backendUrl, sessionStore, active, screen, mee
             savedNote={notePage || noteSheet ? { tcw, layout: notePage ? "page" : "sheet" } : undefined}
             summaries={summaries}
             naming={naming}
+            calendarLinks={calendarLinks}
           />
         ) : wide ? (
           empty ? (

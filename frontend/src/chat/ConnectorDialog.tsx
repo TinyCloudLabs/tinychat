@@ -111,6 +111,13 @@ import { cancelDesktopGoogleOAuth, encodeDesktopRefreshToken, googleRefreshGrant
 import { popupOAuthState } from "@/lib/connectors/googleOAuthState";
 import { clearSameTabReturn, pendingSameTabReturn, sameTabState, saveSameTabVerifier } from "@/lib/connectors/googleOAuthSameTab";
 import {
+  GOOGLE_CALENDAR_LINK_PURPOSE,
+  readCalendarLinkStatus,
+  saveCalendarLinkConnection,
+} from "@/lib/connectors/googleCalendarLink";
+import { calendarLinkingEnabled } from "@/lib/calendarLink/calendarLinkFeature";
+import { calendarLinkRunner } from "@/lib/calendarLink/linkRunner";
+import {
   isGmeetNotesSyncInFlight,
   onGmeetNotesProgress,
   onGmeetNotesSettled,
@@ -134,6 +141,8 @@ import { useOriginMoveDeferral } from "@/shell/OriginMoveNotice";
 import {
   GOOGLE_MEET_CONSENT_COPY,
   GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY,
+  GOOGLE_CALENDAR_LINK_CONSENT_COPY,
+  CALENDAR_LINK_UNAVAILABLE_COPY,
   GOOGLE_TESTING_MODE_REAUTH_COPY,
   transcriptAwareConsentCopy,
   type BackgroundSyncConsentCopy,
@@ -228,7 +237,8 @@ interface ConnectErrorState {
 }
 
 interface ConnectorConnectDialogProps {
-  purpose?: "browser" | "autojoin";
+  /** Which Google consent the OAuth machine runs. `calendar-link` saves its own secret and never touches Meet or autojoin. */
+  purpose?: "browser" | "autojoin" | "calendar-link";
   tcw: TinyCloudWeb;
   descriptor: ConnectorDescriptor;
   /** Backend session for connectors that proxy requests. */
@@ -930,6 +940,10 @@ interface OAuthErrorState {
     | "no-refresh-token"
     /** Sync finished without any connector_state row: the card cannot show it connected. */
     | "connection-not-saved"
+    /** Calendar linking only: Google returned a grant without the calendar permission. */
+    | "calendar-scope"
+    /** Calendar linking only: this server does not mount the shared Google OAuth routes. */
+    | "calendar-link-unavailable"
     | "storage"
     | "network"
     | "unknown";
@@ -980,6 +994,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     subscribeTranscriptConsent, transcriptConsentState, transcriptConsentState,
   );
   const autojoin = purpose === "autojoin";
+  const calendarLink = purpose === "calendar-link";
   const [error, setError] = useState<OAuthErrorState | null>(null);
   const [progress, setProgress] = useState<GmeetSyncProgress | null>(null);
   const [summary, setSummary] = useState<GmeetSyncSummary | null>(null);
@@ -1100,7 +1115,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
     : "unavailable-in-app";
   const desktopAutojoinUnavailable = autojoin && appPlatform() === "tauri";
   const consentCopy = transcriptAwareConsentCopy(
-    autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY,
+    autojoin ? GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY
+      : calendarLink ? GOOGLE_CALENDAR_LINK_CONSENT_COPY : GOOGLE_MEET_CONSENT_COPY,
     transcriptConsent,
   );
 
@@ -1276,6 +1292,38 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
   );
 
   /**
+   * Calendar linking's finish. The token goes to linking's own vault secret through
+   * `saveCalendarLinkConnection`: nothing here writes the Google Meet secret, syncs Meet or calls an
+   * autojoin route. Linking the existing notes runs on its own; the dialog does not wait for it.
+   */
+  const finishCalendarLink = useCallback(async (refreshToken: string, scope: unknown, grant: unknown) => {
+    setPhase("save-token");
+    if (!isSecretsUnlocked(tcw)) {
+      const unlock = await unlockSecrets<SecretsErr>(tcw);
+      if (!unlock.ok) {
+        failWith({ kind: "storage", message: unlock.error?.message ?? "Could not unlock secrets" });
+        return;
+      }
+    }
+    const saved = await saveCalendarLinkConnection(tcw, {
+      refreshToken,
+      desktop: desktopRedirectUriRef.current !== null,
+      scope: typeof scope === "string" ? scope : undefined,
+      grant,
+    });
+    if (!saved.ok) {
+      failWith(saved.reason === "scope"
+        ? { kind: "calendar-scope", message: "" }
+        : { kind: "storage", message: saved.message
+          ?? (saved.reason === "locked" ? "Could not unlock secrets" : "Could not save the calendar link") });
+      return;
+    }
+    void calendarLinkRunner({ tcw, backendUrl, sessionStore })?.backfill().catch(() => {});
+    onConnected();
+    onOpenChange(false);
+  }, [backendUrl, failWith, onConnected, onOpenChange, sessionStore, tcw]);
+
+  /**
    * Calendar autojoin's finish. The server already holds the Calendar-only credential, so this
    * only confirms setup. The browser keeps no autojoin token: nothing here writes the Google
    * Meet secret or syncs Meet, and the Meet connection is left exactly as it was.
@@ -1328,6 +1376,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
             [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
           },
           body: JSON.stringify({ code, verifier, ...(autojoin ? { state: transactionState } : {}),
+            ...(calendarLink ? { purpose: GOOGLE_CALENDAR_LINK_PURPOSE } : {}),
             ...(desktopRedirectUriRef.current ? { desktopRedirectUri: desktopRedirectUriRef.current } : {}) }),
         });
       } catch {
@@ -1337,17 +1386,16 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         return;
       }
       if (!response.ok) {
-        failWith(await readGoogleProxyError(response));
+        const failure = await readGoogleProxyError(response);
+        // A dark route is the shared Google OAuth flag being off, which is not about Google Meet here.
+        failWith(calendarLink && failure.kind === "feature-dark"
+          ? { kind: "calendar-link-unavailable", message: "" } : failure);
         return;
       }
 
-      let payload: { access_token?: unknown; refresh_token?: unknown; setupId?: unknown };
+      let payload: { access_token?: unknown; refresh_token?: unknown; setupId?: unknown; scope?: unknown; grant?: unknown };
       try {
-        payload = (await response.json()) as {
-          access_token?: unknown;
-          refresh_token?: unknown;
-          setupId?: unknown;
-        };
+        payload = (await response.json()) as typeof payload;
       } catch {
         failWith({ kind: "unknown", message: "" });
         return;
@@ -1355,6 +1403,16 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       if (autojoin) {
         // The autojoin token stays on the server. Do not read, keep or save it here.
         await finishAutojoin(typeof payload.setupId === "string" ? payload.setupId : undefined);
+        return;
+      }
+      if (calendarLink) {
+        const linkToken = typeof payload.refresh_token === "string" ? payload.refresh_token : "";
+        if (linkToken.length === 0) {
+          failWith({ kind: "no-refresh-token", message: "" });
+          return;
+        }
+        // Kept out of the Meet token refs: this token is never used for a Meet sync or retry.
+        await finishCalendarLink(linkToken, payload.scope, payload.grant);
         return;
       }
       const accessToken =
@@ -1372,7 +1430,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         ? encodeDesktopRefreshToken(refreshToken) : refreshToken;
       await saveAndSync(accessToken, refreshToken);
     },
-    [autojoin, backendUrl, failWith, finishAutojoin, saveAndSync, sessionStore],
+    [autojoin, backendUrl, calendarLink, failWith, finishAutojoin, finishCalendarLink, saveAndSync, sessionStore],
   );
   // The native return arrives after an app round trip; it reads the latest exchange.
   const runExchangeRef = useRef(runExchange);
@@ -1401,19 +1459,20 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         const state = sameTabState(window.location.pathname, randomUrlSafeToken(24));
         const verifier = randomUrlSafeToken(32);
         const challenge = await pkceChallengeS256(verifier);
-        saveSameTabVerifier(state, verifier, autojoin ? "autojoin" : "connect");
+        saveSameTabVerifier(state, verifier, autojoin ? "autojoin" : calendarLink ? "calendar-link" : "connect");
         if (autojoin) {
           const begun = await beginAutojoinAuthorization({ backendUrl, sessionStore, state, challenge });
           if (!begun.ok) { setError(begun.error); return; }
           window.location.assign(begun.authorizationUrl);
         } else {
-          window.location.assign(`${backendUrl}${GOOGLE_OAUTH_START_PATH}?${new URLSearchParams({ state, challenge })}`);
+          window.location.assign(`${backendUrl}${GOOGLE_OAUTH_START_PATH}?${new URLSearchParams({ state, challenge,
+            ...(calendarLink ? { purpose: GOOGLE_CALENDAR_LINK_PURPOSE } : {}) })}`);
         }
       } catch {
         setError({ kind: "crypto-unavailable", message: "" });
       }
     })();
-  }, [autojoin, backendUrl, sessionStore]);
+  }, [autojoin, backendUrl, calendarLink, sessionStore]);
 
   /**
    * The native app's authorize (TC-521): no popup, so nothing has to happen
@@ -1449,7 +1508,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       stateRef.current = state;
       verifierRef.current = verifier;
       let url = `${backendUrl}${GOOGLE_OAUTH_START_PATH}` +
-        `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}`;
+        `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}` +
+        (calendarLink ? `&purpose=${GOOGLE_CALENDAR_LINK_PURPOSE}` : "");
       if (autojoin) {
         const begun = await beginAutojoinAuthorization({ backendUrl, sessionStore, state, challenge });
         if (!current()) return;
@@ -1480,7 +1540,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         },
       });
     })();
-  }, [autojoin, backendUrl, cancelNativeAttempt, failWith, sessionStore]);
+  }, [autojoin, backendUrl, calendarLink, cancelNativeAttempt, failWith, sessionStore]);
 
   /**
    * The click handler, and the reason it is not async: `window.open` must be
@@ -1506,7 +1566,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
           const bearer = sessionStore.getToken();
           if (!bearer || sessionStore.isExpired()) { failWith({ kind: "session", message: "" }); return; }
           const code = await startDesktopGoogleOAuth({ backendUrl, bearer, state, challenge,
-            onRedirectUri: (uri) => { desktopRedirectUriRef.current = uri; } });
+            onRedirectUri: (uri) => { desktopRedirectUriRef.current = uri; },
+            ...(calendarLink ? { purpose: GOOGLE_CALENDAR_LINK_PURPOSE } : {}) });
           if (nativeGenerationRef.current !== generation || codeHandledRef.current) return;
           codeHandledRef.current = true;
           void runExchangeRef.current(code);
@@ -1561,7 +1622,8 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
       stateRef.current = state;
       verifierRef.current = verifier;
       let url = `${backendUrl}${GOOGLE_OAUTH_START_PATH}` +
-        `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}`;
+        `?state=${encodeURIComponent(state)}&challenge=${encodeURIComponent(challenge)}` +
+        (calendarLink ? `&purpose=${GOOGLE_CALENDAR_LINK_PURPOSE}` : "");
       if (autojoin) {
         const bearer = sessionStore.getToken();
         if (!bearer || sessionStore.isExpired()) { closePopup(); failWith({ kind: "session", message: "" }); return; }
@@ -1585,7 +1647,7 @@ const OAuthConnectDialog: FC<ConnectorConnectDialogProps> = ({
         setError({ kind: "cancelled", message: "" });
       }
     })();
-  }, [autojoin, authorizeInSystemBrowser, backendUrl, cancelNativeAttempt, closePopup, failWith, sessionStore]);
+  }, [autojoin, authorizeInSystemBrowser, backendUrl, calendarLink, cancelNativeAttempt, closePopup, failWith, sessionStore]);
 
   /**
    * The callback listener, live only while we are waiting for one.
@@ -2281,7 +2343,8 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
   const runTeardown = useCallback(async () => {
     setRunning(true);
     const resume = progressRef.current;
-    let showRevokeWarning = revoke?.status === "failed" || revoke?.status === "no-token";
+    // A kept grant is not a failure, but the dialog stays open so the owner reads why Google access remains.
+    let showRevokeWarning = revoke?.status === "failed" || revoke?.status === "no-token" || revoke?.status === "kept-for-calendar";
 
     // ONE path, in one order: revoke upstream FIRST (while the token is still
     // readable — `delete-key` is about to wipe it), then the ordered local
@@ -2298,7 +2361,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
         sessionStore,
       });
       setRevoke(revokeOutcome);
-      showRevokeWarning = revokeOutcome.status === "failed" || revokeOutcome.status === "no-token";
+      showRevokeWarning = revokeOutcome.status === "failed" || revokeOutcome.status === "no-token" || revokeOutcome.status === "kept-for-calendar";
       if (revokeOutcome.status === "locked" || revokeOutcome.status === "server-unavailable") {
         // The one blocking case: without the vault we can neither read the
         // token to revoke nor delete it, so nothing has happened yet and the
@@ -2438,9 +2501,9 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
 
         {revokeMessage && (
           <p
-            role={revoke?.status === "revoked" ? undefined : "alert"}
+            role={revoke?.status === "revoked" || revoke?.status === "kept-for-calendar" ? undefined : "alert"}
             className={
-              revoke?.status === "revoked"
+              revoke?.status === "revoked" || revoke?.status === "kept-for-calendar"
                 ? "text-xs text-muted-foreground"
                 : "text-xs text-destructive"
             }
@@ -2550,7 +2613,8 @@ export const NO_DELIVERY_LANE: DisconnectWebhooks = {
 
 /** What the upstream `POST /revoke` did. Never fatal except `locked`. */
 export interface UpstreamRevokeState {
-  status: "revoked" | "no-token" | "failed" | "locked" | "server-unavailable";
+  /** `kept-for-calendar`: the disconnect went through and Google access was left in place for Calendar linking. */
+  status: "revoked" | "kept-for-calendar" | "no-token" | "failed" | "locked" | "server-unavailable";
   /** Google's or the vault's own words, when there are any. */
   message?: string;
 }
@@ -2573,6 +2637,8 @@ export async function revokeGoogleUpstream(input: {
   backendUrl: string;
   sessionStore: SessionStore;
   fetchImpl?: typeof fetch;
+  /** Whether Calendar linking holds the same Google grant. Default: the flag is on and linking is connected. */
+  calendarLinkConnected?: () => Promise<boolean>;
 }): Promise<UpstreamRevokeState> {
   const { tcw, descriptor, backendUrl, sessionStore } = input;
   const fetchImpl = input.fetchImpl ?? fetch;
@@ -2582,11 +2648,15 @@ export async function revokeGoogleUpstream(input: {
   let serverRevoked = false;
   const auth = sessionStore.getToken();
   if (!auth || sessionStore.isExpired()) return { status: "server-unavailable", message: "your TinyCloud One session expired" };
+  // Google revokes a grant for the whole project, so while Calendar linking reads with it the server
+  // is told to end its own custody and leave Google access alone.
+  const keptForCalendar = await (input.calendarLinkConnected ?? (() => calendarLinkHoldsGrant(tcw)))().catch(() => false);
+  const holder = keptForCalendar ? { calendarLinkConnected: true } : {};
   {
     try {
       const disconnected = await fetchImpl(`${backendUrl}/api/connectors/google/autojoin/disconnect`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth}`,
-          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE }, body: "{}",
+          [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE }, body: JSON.stringify(holder),
       });
       // Older browser-only deployments have no autojoin route.
       if (disconnected.status === 502) serverRevokeFailed = true;
@@ -2613,8 +2683,8 @@ export async function revokeGoogleUpstream(input: {
   // subjects. Successfully revoking the browser token cannot clear the server warning.
   const finished: UpstreamRevokeState = serverRevokeFailed
     ? { status: "failed", message: "Google could not revoke access; server credentials were removed" }
-    : { status: "revoked" };
-  if (!browserToken) return serverRevokeFailed || serverRevoked ? finished : localFailure ?? finished;
+    : keptForCalendar ? { status: "kept-for-calendar" } : { status: "revoked" };
+  if (!browserToken) return serverRevokeFailed || serverRevoked || keptForCalendar ? finished : localFailure ?? finished;
   const bearer = sessionStore.getToken();
   if (!bearer || sessionStore.isExpired()) {
     return { status: "failed", message: "your TinyCloud One session expired" };
@@ -2627,7 +2697,7 @@ export async function revokeGoogleUpstream(input: {
         Authorization: `Bearer ${bearer}`,
         [REQUEST_HEADER_NAME]: REQUEST_HEADER_VALUE,
       },
-      body: JSON.stringify(browserToken ? { token: googleRefreshGrant(browserToken).refreshToken } : {}),
+      body: JSON.stringify({ ...(browserToken ? { token: googleRefreshGrant(browserToken).refreshToken } : {}), ...holder }),
     });
     if (response.ok) return finished;
     const failure = await readGoogleProxyError(response);
@@ -2643,10 +2713,18 @@ export async function revokeGoogleUpstream(input: {
   }
 }
 
+/** Calendar linking shares the Google grant only while the feature is built in and its link is connected. */
+async function calendarLinkHoldsGrant(tcw: TinyCloudWeb): Promise<boolean> {
+  if (!calendarLinkingEnabled()) return false;
+  return (await readCalendarLinkStatus(tcw)).state === "connected";
+}
+
 export function upstreamRevokeMessage(state: UpstreamRevokeState): string | null {
   switch (state.status) {
     case "revoked":
       return null;
+    case "kept-for-calendar":
+      return "Google access was kept because Calendar linking still uses it. Unlink Google Calendar too to remove it.";
     case "no-token":
       // Keep this name until the Google OAuth app's display name is changed (TinyCloud One consolidation); these lines must match what Google shows.
       return `We couldn’t read a saved Google connection to revoke — remove TinyChat yourself at ${GOOGLE_THIRD_PARTY_ACCESS_URL}. The rest of the disconnect continues.`;
@@ -2835,6 +2913,10 @@ function formatOAuthError(error: OAuthErrorState): string {
       return "TinyCloud One couldn’t open the browser for Google sign-in. Nothing was connected — press “Continue with Google” to try again.";
     case "crypto-unavailable":
       return "This browser couldn’t prepare a secure sign-in. Google Meet needs a secure (https) page with Web Crypto available.";
+    case "calendar-scope":
+      return "Google didn't grant calendar access. Try again and leave the calendar permission ticked.";
+    case "calendar-link-unavailable":
+      return CALENDAR_LINK_UNAVAILABLE_COPY;
     case "cancelled":
       return "The Google window closed before sign-in finished. Nothing was connected — press “Continue with Google” to try again.";
     case "session":

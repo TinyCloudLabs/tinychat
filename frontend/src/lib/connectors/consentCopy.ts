@@ -3,7 +3,7 @@
 import type { TranscriptConsentState } from "../transcriptDeliveryState";
 
 export type ConsentCopyVariant =
-  | "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin"
+  | "A" | "B" | "C" | "B-ingest" | "google-oauth" | "google-calendar-autojoin" | "google-calendar-link"
   | "C-transcript-writer" | "B-ingest-transcript-writer"
   | "google-oauth-transcript-writer" | "google-calendar-autojoin-transcript-writer";
 
@@ -72,6 +72,28 @@ export const GOOGLE_CALENDAR_AUTOJOIN_CONSENT_COPY: BackgroundSyncConsentCopy = 
     "TinyCloud One sends a notetaker to Google Meet events on your main calendar that you organize or have accepted, even while TinyCloud One is closed; the host still admits it. To do that, our server keeps your Google sign-in and reads your calendar. Turning this off deletes it.",
   disconnectNote: "Disconnecting Google Meet also stops Calendar autojoin, removes the server’s token and asks Google to revoke it. A failed revoke is reported. Your recordings remain available.",
 };
+
+/**
+ * Calendar linking's own consent: read-only, token in the user's vault, never autojoin's server custody.
+ * Google revokes per Cloud project, not per feature, so the disconnect note promises only what unlinking
+ * always does (stop reading, delete the token) and says where Google access itself can be removed.
+ */
+export const GOOGLE_CALENDAR_LINK_CONSENT_COPY: BackgroundSyncConsentCopy = {
+  variant: "google-calendar-link",
+  heading: "Link Google Calendar",
+  intro:
+    "Link your Google Calendar to your recordings. TinyCloud One reads your events (titles, times, guests, meeting links) to show which meeting a recording belongs to. It never joins meetings, sends a notetaker or changes your calendar. You can unlink at any time.",
+  disconnectNote:
+    "Unlinking stops TinyCloud One reading your calendar and deletes its access token. Google access itself may stay in place while another TinyCloud One Google feature uses it, and you can always remove it in your Google Account under Third-party connections. Linked meeting details stay on your notes unless you also remove them.",
+};
+
+/** Said wherever linking would start, when this server does not mount the shared Google OAuth routes. */
+export const CALENDAR_LINK_UNAVAILABLE_COPY = "Calendar linking isn't available on this server.";
+
+/** The "Link Google Calendar" row's one line, and its Unlink choice, the same on both settings surfaces. */
+export const CALENDAR_LINK_DESCRIPTION =
+  "Shows which calendar meeting a recording belongs to. Read-only: nothing joins your meetings.";
+export const CALENDAR_LINK_REMOVE_DETAILS_LABEL = "Remove calendar details from notes";
 
 /**
  * The transcript-writer grant, as it really is. Its SQL half is read+write on the whole connectors

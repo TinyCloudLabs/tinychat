@@ -476,6 +476,20 @@ export class GmeetClient {
   }
 
   /**
+   * The meeting code of one space (spaces.get, the `meetingCode` field only), for a `spaces/{id}` resource name or
+   * a bare id. Null when Google returned the space without a code. A 403 or 404 means this user cannot see the
+   * space (Google masks whether it exists).
+   */
+  async getSpaceMeetingCode(spaceName: string, opts: GmeetCallOptions = {}): Promise<GmeetResult<string | null>> {
+    const result = await this.request<GmeetSpace>(
+      this.url(`spaces/${encodeURIComponent(gmeetSpaceIdFromInput(spaceName))}`, { fields: "meetingCode" }), { method: "GET" }, opts,
+    );
+    if (!result.ok) return result;
+    const code = result.data.meetingCode;
+    return { ok: true, data: typeof code === "string" && code.length > 0 ? code : null };
+  }
+
+  /**
    * Turn auto-transcription ON for a space. Accepts a full `spaces/{id}`
    * resource name, a bare space id, a meeting code, or a pasted meeting link,
    * whose code `gmeetSpaceIdFromInput` extracts.

@@ -88,6 +88,8 @@ import { BackgroundSyncSection } from "./BackgroundSyncSection";
 import { supportsBackgroundNotifications } from "./backgroundSyncState";
 import { GMEET_CONNECTOR_ID, mintGmeetAccessToken } from "./useGmeetSessionSync";
 import { CalendarAutojoinSection } from "./CalendarAutojoinSection";
+import { CalendarLinkSection } from "./CalendarLinkSection";
+import { calendarLinkingEnabled } from "@/lib/calendarLink/calendarLinkFeature";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusDot, type StatusTone } from "@/components/ui/status-dot";
 import { secretsAvailable, SECRETS_UNAVAILABLE_IN_APP_MESSAGE } from "@/lib/openkeyNative";
@@ -407,7 +409,7 @@ export function ConnectorsCard({
   // Which connector (if any) currently owns a modal. Only one can be open at
   // a time — the card is a source list, not a multi-dialog dashboard.
   const [dialog, setDialog] = useState<
-    { kind: "connect" | "disconnect" | "autojoin"; id: ConnectorId } | null
+    { kind: "connect" | "disconnect" | "autojoin" | "calendar-link"; id: ConnectorId } | null
   >(() => {
     const returned = pendingSameTabReturn();
     return returned ? { kind: returned.purpose, id: GMEET_CONNECTOR_ID } : null;
@@ -746,6 +748,13 @@ export function ConnectorsCard({
               </ConnectorRow>
             </li>
           ))}
+          {calendarLinkingEnabled() && secretsAvailable() && (
+            // Its own row: Calendar linking needs neither Google Meet connected nor Calendar autojoin on.
+            <li className="px-4 py-3">
+              <CalendarLinkSection tcw={tcw} backendUrl={backendUrl} sessionStore={sessionStore}
+                onLink={() => setDialog({ kind: "calendar-link", id: GMEET_CONNECTOR_ID })} />
+            </li>
+          )}
         </ul>
         {import.meta.env.DEV && gmeetDiagnostics && (
           <pre
@@ -756,11 +765,11 @@ export function ConnectorsCard({
           </pre>
         )}
       </div>
-      {dialogDescriptor && (dialog?.kind === "connect" || dialog?.kind === "autojoin") && (
+      {dialogDescriptor && (dialog?.kind === "connect" || dialog?.kind === "autojoin" || dialog?.kind === "calendar-link") && (
         <ConnectorConnectDialog
           tcw={tcw}
           descriptor={dialogDescriptor}
-          purpose={dialog?.kind === "autojoin" ? "autojoin" : "browser"}
+          purpose={dialog.kind === "connect" ? "browser" : dialog.kind}
           backendUrl={backendUrl}
           sessionStore={sessionStore}
           open

@@ -19,6 +19,10 @@ import {
   supportsBackgroundNotifications,
 } from "@/chat/backgroundSyncState";
 import { ConnectorConnectDialog } from "@/chat/ConnectorDialog";
+import { useCalendarLinkSettings } from "@/chat/CalendarLinkSection";
+import { calendarLinkingEnabled } from "@/lib/calendarLink/calendarLinkFeature";
+import { CALENDAR_LINK_REMOVE_DETAILS_LABEL, GOOGLE_CALENDAR_LINK_CONSENT_COPY } from "@/lib/connectors/consentCopy";
+import { secretsAvailable } from "@/lib/openkeyNative";
 import { GranolaAllowBack } from "@/chat/GranolaAllowBack";
 import { GranolaReconnect, GranolaSummariesNotice } from "@/chat/GranolaConnectionNotices";
 import { GRANOLA_CSV_STRINGS } from "@/lib/connectors/granolaCsvStrings";
@@ -40,6 +44,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { DISCONNECT_WHILE_SYNCING, DisconnectRow, FirefliesManage } from "./ManagePanel";
 import {
   CalendarAutojoinRow,
+  CalendarLinkRow,
   DisconnectDataChoice,
   GmeetNotices,
   MeetingSourcesEntry,
@@ -71,6 +76,8 @@ const visibleSources = SOURCE_IDS.map((id) => CONNECTORS.find((d) => d.id === id
   (d): d is ConnectorDescriptor => d !== undefined && (d.id !== "granola" || d.status === "available"),
 );
 const sourceSubtitle = new Intl.ListFormat("en-GB").format(visibleSources.map((d) => d.name));
+/** The consent dialog's OAuth machine is the Google one; Calendar linking only borrows it. */
+const googleSource = CONNECTORS.find((d) => d.id === "google-meet");
 
 /** A source with no entry yet has not been read. Failed is not "not connected". */
 type ConnectionRead =
@@ -114,7 +121,7 @@ export function MeetingSourcesDialog({
   const [manageOpen, setManageOpen] = useState<Partial<Record<ConnectorId, boolean>>>({});
   const [connectDialog, setConnectDialog] = useState<{
     descriptor: ConnectorDescriptor;
-    purpose: "browser" | "autojoin";
+    purpose: "browser" | "autojoin" | "calendar-link";
     startWithKey?: boolean;
   } | null>(null);
   const [granolaConnecting, setGranolaConnecting] = useState(false);
@@ -328,6 +335,15 @@ export function MeetingSourcesDialog({
             />
           );
         })}
+        {googleSource && calendarLinkingEnabled() && secretsAvailable() && (
+          <CalendarLinkSource
+            tcw={tcw}
+            backendUrl={backendUrl}
+            sessionStore={sessionStore}
+            enabled={open}
+            onLink={() => setConnectDialog({ descriptor: googleSource, purpose: "calendar-link" })}
+          />
+        )}
       </MeetingSourcesWindow>
 
       {disconnectDescriptor && (
@@ -394,6 +410,58 @@ export function MeetingSourcesDialog({
           }}
         />
       )}
+    </>
+  );
+}
+
+/**
+ * "Link Google Calendar" as its own row under the sources: it needs neither Google Meet connected nor
+ * Calendar autojoin on. Unlink asks first, with the choice to also remove the calendar details from notes.
+ */
+function CalendarLinkSource(props: {
+  tcw: TinyCloudWeb;
+  backendUrl: string;
+  sessionStore: SessionStore;
+  enabled: boolean;
+  onLink: () => void;
+}) {
+  const link = useCalendarLinkSettings(props);
+  const [confirming, setConfirming] = useState(false);
+  const [removeDetails, setRemoveDetails] = useState(false);
+  return (
+    <>
+      <CalendarLinkRow
+        display={link.display}
+        onLink={link.link}
+        onLinkExisting={link.linkExisting}
+        onUnlink={() => {
+          setRemoveDetails(false);
+          setConfirming(true);
+        }}
+      />
+      <ConfirmDialog
+        open={confirming}
+        title="Unlink Google Calendar?"
+        message={GOOGLE_CALENDAR_LINK_CONSENT_COPY.disconnectNote}
+        keepLabel="Keep linked"
+        dropLabel="Unlink"
+        onKeep={() => setConfirming(false)}
+        onDrop={() => {
+          setConfirming(false);
+          link.unlink(removeDetails);
+        }}
+        returnFocus={() => document.querySelector<HTMLElement>('[data-source="calendar-link"] .ms-btn1, [data-source="calendar-link"] .ms-btn2')}
+        testId="calendar-link-unlink-confirm"
+      >
+        <label className="ms-confirm-choice">
+          <input
+            type="checkbox"
+            checked={removeDetails}
+            onChange={(event) => setRemoveDetails(event.target.checked)}
+          />
+          <span>{CALENDAR_LINK_REMOVE_DETAILS_LABEL}</span>
+        </label>
+      </ConfirmDialog>
     </>
   );
 }

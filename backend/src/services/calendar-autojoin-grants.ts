@@ -6,7 +6,8 @@ interface Reference {
   expiresAt?: number;
 }
 
-export type GoogleGrantRevokeReason = "last_holder" | "shared_holder" | "index_unavailable" | "token_unindexed" | "reference_check_failed";
+export type GoogleGrantRevokeReason = "last_holder" | "shared_holder" | "index_unavailable" | "token_unindexed" | "reference_check_failed"
+  | "calendar_link_holder" | "connector_holder" | "identity_unknown";
 export interface GoogleGrantRevokeDecision { revoke: boolean; reason: GoogleGrantRevokeReason }
 export interface GrantBackfillSnapshot { revision: number; uncertainty: number }
 interface TokenBinding { subjectHash: string; tokenHashes: Set<string> }
@@ -48,9 +49,7 @@ export class CalendarAutojoinGrantIndex {
   }
 
   restoreBrowser(tenant: string, binding: CalendarGoogleBrowserBinding): void {
-    const digest = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-    if (binding.version !== 1 || !digest(binding.subjectHash) || !Array.isArray(binding.tokenHashes)
-      || binding.tokenHashes.length > 2 || !binding.tokenHashes.every(digest)) throw new Error("google_browser_binding_invalid");
+    if (!validBrowserBinding(binding)) throw new Error("google_browser_binding_invalid");
     const key = tenant.toLowerCase();
     this.browserTokens.set(key, { subjectHash: binding.subjectHash, tokenHashes: new Set(binding.tokenHashes) });
     if (!this.tenants.has(key)) this.tenants.set(key, { subjectHash: binding.subjectHash, revision: ++this.revision });
@@ -110,6 +109,19 @@ export class CalendarAutojoinGrantIndex {
     });
   }
 
+  /**
+   * Calendar linking keeps no row here: the browser returns the binding its exchange was given.
+   * Revoke only when that binding names this token and no live autojoin holder (any tenant) shares
+   * its Google subject. Read-only: nothing is detached, forgotten or recorded.
+   */
+  decideCalendarLink(token: string, binding: unknown): GoogleGrantRevokeDecision {
+    if (!validBrowserBinding(binding) || !binding.tokenHashes.includes(this.hashToken(token))) {
+      return { revoke: false, reason: "identity_unknown" };
+    }
+    if (!this.trusted) return { revoke: false, reason: "index_unavailable" };
+    return this.decide(binding.subjectHash);
+  }
+
   private decide(subjectHash: string): GoogleGrantRevokeDecision {
     const holders = this.subjects.get(subjectHash);
     if (holders) {
@@ -119,6 +131,13 @@ export class CalendarAutojoinGrantIndex {
     }
     return { revoke: true, reason: "last_holder" };
   }
+}
+
+function validBrowserBinding(binding: unknown): binding is CalendarGoogleBrowserBinding {
+  const digest = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  if (typeof binding !== "object" || binding === null) return false;
+  const { version, subjectHash, tokenHashes } = binding as Partial<CalendarGoogleBrowserBinding>;
+  return version === 1 && digest(subjectHash) && Array.isArray(tokenHashes) && tokenHashes.length <= 2 && tokenHashes.every(digest);
 }
 
 /** Disabled/reconnect rows can retain crash residue; that custody is no longer usable policy. */

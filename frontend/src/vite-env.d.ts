@@ -69,6 +69,11 @@ interface ImportMetaEnv {
    * showing a stored suggestion). Unset = off, in production too, until the held-out gate passes.
    */
   readonly VITE_SPEAKER_NAME_SUGGESTIONS?: string;
+  /**
+   * "true" turns on calendar linking (the Google Calendar consent in Settings, the runner that links notes to
+   * events, the note's calendar chip, and invitees as naming candidates). Unset = off: a stored link is not shown.
+   */
+  readonly VITE_CALENDAR_LINKING?: string;
 }
 
 interface ImportMeta {

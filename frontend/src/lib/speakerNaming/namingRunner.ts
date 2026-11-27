@@ -14,11 +14,13 @@
 // becomes a name when the user accepts it. A run with no names still writes an empty result, so the note is not
 // read again. A failed run writes nothing and is tried again on the next change or opening, once per note in a
 // session. It logs nothing: no transcript text, no model text, no error message.
+import { CALENDAR_LINK_KEY, calendarLinkInviteeNames, parseCalendarLink } from "@tinyboilerplate/core";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { captureEvents } from "@/capture/captureEvents";
 import { CALL_PARTICIPANTS_KEY, parseCallParticipants } from "@/capture/library/callParticipants";
 import { EARLIER_SPEAKER_NAMES_KEY } from "@/capture/library/speakerNames";
+import { calendarLinkingEnabled } from "@/lib/calendarLink/calendarLinkFeature";
 import { CONNECTORS_SQL_DB_NAME } from "@/lib/connectors/connectorStore";
 import { readTranscript } from "@/lib/connectors/meetingExplorer";
 import { scheduledSpace } from "@/lib/spaceQueue";
@@ -64,10 +66,13 @@ interface Job {
   again: boolean;
 }
 
-/** What a run needs of the note's row. The row's whole `metadata` is never read: it can hold the transcript's text. */
+/**
+ * What a run needs of the note's row. The row's whole `metadata` is never read: it can hold the transcript's text.
+ * Its calendar link is small (an event's title and times and at most 100 invitees).
+ */
 const NOTE_QUERY = `SELECT id, started_at, duration_secs, json_extract(metadata, '$.capture'),
     json_extract(metadata, '$.${NAME_SUGGESTIONS_KEY}.hash'), json_extract(metadata, '$.${EARLIER_SPEAKER_NAMES_KEY}'),
-    json_extract(metadata, '$.${CALL_PARTICIPANTS_KEY}')
+    json_extract(metadata, '$.${CALL_PARTICIPANTS_KEY}'), json_extract(metadata, '$.${CALENDAR_LINK_KEY}')
   FROM connector_meeting WHERE source = '${VOICE_NOTE_SOURCE}' AND source_id = ? AND json_valid(metadata)`;
 
 /** A list or an object as `json_extract` returns it (its JSON text); null when there is none or it cannot be read. */
@@ -119,6 +124,8 @@ export function createNamingRunner(deps: NamingRunnerDeps): NamingRunner {
       const candidates = await readCandidateNames(space, {
         // The people of this call, as the names in the call read them (the same reader, so the same cleaning).
         call: parseCallParticipants(extracted(row[6]))?.people.map((person) => person.name) ?? [],
+        // The people invited to the linked event, by display name: of the link nothing else reaches the model.
+        invited: calendarLinkingEnabled() ? calendarLinkInviteeNames(parseCalendarLink(extracted(row[7]))) : [],
         earlier: earlierNames(row[5]),
         startedAt: typeof row[1] === "string" ? row[1] : null,
         durationSecs: typeof row[2] === "number" ? row[2] : null,

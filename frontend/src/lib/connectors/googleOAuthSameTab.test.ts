@@ -70,6 +70,29 @@ test.each(["home", "one"] as const)("a same-tab return restores the verifier sav
   }
 });
 
+test("a Calendar linking round trip comes back as its own purpose, for a code and for a cancel", () => {
+  const dom = new Window({ url: "https://app.example.test/chat/connectors" });
+  const globals = globalThis as typeof globalThis & { window?: Window; sessionStorage?: Storage };
+  const oldWindow = globals.window;
+  const oldStorage = globals.sessionStorage;
+  globals.window = dom;
+  globals.sessionStorage = dom.sessionStorage;
+  try {
+    const state = sameTabState("/chat/connectors", NONCE, null);
+    saveSameTabVerifier(state, "verifier", "calendar-link");
+    dom.history.replaceState(null, "", `/chat/connectors?state=${state}&google_oauth_code=code`);
+    expect(pendingSameTabReturn()).toEqual({ state, code: "code", error: false, verifier: "verifier", purpose: "calendar-link" });
+    dom.history.replaceState(null, "", `/chat/connectors?state=${state}&google_oauth_error=not_completed`);
+    expect(pendingSameTabReturn()).toEqual({ state, code: null, error: true, verifier: "verifier", purpose: "calendar-link" });
+    clearSameTabReturn(state);
+    expect(pendingSameTabReturn()).toBeNull();
+  } finally {
+    globals.window = oldWindow;
+    globals.sessionStorage = oldStorage;
+    void dom.happyDOM.abort();
+  }
+});
+
 test("a return whose state has no stored verifier, or an unrelated tag, is ignored", () => {
   const dom = new Window({ url: "https://home.example.test/chat/connectors" });
   const globals = globalThis as typeof globalThis & { window?: Window; sessionStorage?: Storage };

@@ -1,9 +1,12 @@
 // How a note's suggested speaker names are stored (`metadata.speaker_name_suggestions`), against a real space.
 import { describe, expect, test } from "bun:test";
+import { linkedCalendarLink } from "@tinyboilerplate/core";
 
+import { dismissedInviteeLabels } from "@/lib/speakerNaming/inviteeSuggestion";
 import { currentNameSuggestions, readNameSuggestions, shownNameSuggestions, TRANSCRIPT_HASH_KEY, type NameSuggestions } from "@/lib/speakerNaming/nameSuggestions";
 import { CALL, namingSpace } from "@/lib/speakerNaming/namingSpace.fixture";
 import { dismissRowNameSuggestions, writeRowNameSuggestions } from "./nameSuggestionRows";
+import { dismissRowInviteeSuggestion } from "./nameSuggestionRows";
 import { patchRowSpeakerName } from "./voiceNoteRows";
 
 const ALICE = { name: "Alice Chen", basis: "self-introduction", quote: "I'm Alice Chen" } as const;
@@ -77,6 +80,45 @@ describe("a note's suggested speaker names", () => {
     space.meeting("fireflies", "m", "2026-11-20T09:50:00.000Z", 3600, []);
     expect(await writeRowNameSuggestions(space.tcw, "fireflies-m", run("h"), true)).toBe(false);
     expect(await writeRowNameSuggestions(space.tcw, "missing", run("h"), true)).toBe(false);
+  });
+});
+
+describe("a dismissed invitee suggestion on the note's row", () => {
+  const link = (eventId: string) => linkedCalendarLink({ id: eventId, status: "confirmed", summary: "Pricing review",
+    start: { dateTime: "2026-11-20T10:00:00Z" }, end: { dateTime: "2026-11-20T10:30:00Z" },
+    attendees: [{ self: true, displayName: "Robin Sample", responseStatus: "accepted" }, { displayName: "Kim Lee", responseStatus: "accepted" }],
+  }, { method: "time_overlap", confidence: "medium", overlap: 1 }, "2026-11-20T11:00:00.000Z");
+
+  test("is stored under its own key with the event it is about, and nothing else on the row changes but the time it was updated", async () => {
+    const space = namingSpace();
+    const hash = await space.note("call", CALL);
+    const id = space.rowId("call");
+    await writeRowNameSuggestions(space.tcw, id, run(hash), false);
+    await patchRowSpeakerName(space.tcw, id, "Me", "Roman");
+    space.setMetadata("call", { calendar_link: link("evt-1") });
+    space.sqlite.run("UPDATE connector_meeting SET updated_at = '2026-01-01T00:00:00.000Z' WHERE id = ?", [id]);
+    const before = space.metadata("call");
+
+    expect(await dismissRowInviteeSuggestion(space.tcw, id, "evt-1", ["Speaker 1"])).toBe(true);
+
+    expect(space.metadata("call")).toEqual({ ...before, invitee_suggestion_dismissed: { event_id: "evt-1", labels: ["Speaker 1"] } });
+    expect(space.updatedAt("call") > "2026-01-01T00:00:00.000Z").toBe(true);
+    expect(dismissedInviteeLabels(space.metadata("call"), "evt-1")).toEqual(["Speaker 1"]);
+  });
+
+  test("is not written for an event the note is not linked to, and does not count once the note is linked to another", async () => {
+    const space = namingSpace();
+    await space.note("call", CALL);
+    const id = space.rowId("call");
+    // No link at all, then a link to another event than the one the page showed.
+    expect(await dismissRowInviteeSuggestion(space.tcw, id, "evt-1", ["Speaker 1"])).toBe(false);
+    space.setMetadata("call", { calendar_link: link("evt-2") });
+    expect(await dismissRowInviteeSuggestion(space.tcw, id, "evt-1", ["Speaker 1"])).toBe(false);
+    expect(space.metadata("call")).not.toHaveProperty("invitee_suggestion_dismissed");
+
+    expect(await dismissRowInviteeSuggestion(space.tcw, id, "evt-2", ["Speaker 1"])).toBe(true);
+    space.setMetadata("call", { calendar_link: link("evt-3") });
+    expect(dismissedInviteeLabels(space.metadata("call"), "evt-3")).toEqual([]);
   });
 });
 

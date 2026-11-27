@@ -69,6 +69,8 @@ export async function buildHarness(): Promise<HarnessAssets> {
       "import.meta.env": JSON.stringify({ VITE_GRANOLA_CONNECTOR_ENABLED: process.env.VITE_GRANOLA_CONNECTOR_ENABLED }),
       // Suggested speaker names: the app reads this flag by its full name, so it is defined by that name.
       "import.meta.env.VITE_SPEAKER_NAME_SUGGESTIONS": JSON.stringify(process.env.VITE_SPEAKER_NAME_SUGGESTIONS ?? ""),
+      // Calendar linking: read by its full name too.
+      "import.meta.env.VITE_CALENDAR_LINKING": JSON.stringify(process.env.VITE_CALENDAR_LINKING ?? ""),
       __EXO_BUILD_INFO__: JSON.stringify(exoBuildInfo),
     },
     // index.css's @font-face URLs point into frontend/public (served below).

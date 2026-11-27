@@ -1,4 +1,4 @@
-import { browserTokenPayload, type CalendarAutojoinConnection } from "../services/calendar-autojoin-connection.js";
+import { browserTokenPayload, type CalendarAutojoinConnection, type CalendarLinkRelease } from "../services/calendar-autojoin-connection.js";
 import { randomBytes } from "node:crypto";
 import { Router } from "express";
 import { HOME_WEB_ORIGIN, TINYCHAT_WEB_ORIGIN, TINYCLOUD_ONE_WEB_ORIGIN, frontendOriginsFromEnv } from "../cors-origins.js";
@@ -74,6 +74,11 @@ function firstQueryValue(value: unknown): unknown {
   // Express gives an ARRAY for a repeated param (`?state=a&state=b`); take neither, so a
   // duplicated param cannot smuggle a second value past a check that saw the first.
   return Array.isArray(value) ? undefined : value;
+}
+
+/** The optional `purpose` of a flow: undefined when absent, null for anything but one `calendar-link`. */
+function calendarLinkPurpose(value: unknown): "calendar-link" | undefined | null {
+  return value === undefined ? undefined : value === "calendar-link" ? value : null;
 }
 
 // ── Native (Exo app) return ──────────────────────────────────────────
@@ -343,7 +348,7 @@ export function createGoogleOAuthRouter(
   });
 
   /**
-   * `GET /start?state=…&challenge=…` → 302 to Google.
+   * `GET /start?state=…&challenge=…[&purpose=calendar-link]` → 302 to Google.
    *
    * The SPA holds the verifier; the server only ever sees the challenge, so this route cannot
    * complete an exchange on its own and there is nothing here to persist.
@@ -351,6 +356,7 @@ export function createGoogleOAuthRouter(
   router.get("/start", (req: Request, res: Response) => {
     const state = firstQueryValue(req.query.state);
     const challenge = firstQueryValue(req.query.challenge);
+    const purpose = calendarLinkPurpose(req.query.purpose);
     const client = isValidOAuthState(state) ? oauthReturnClient(state) : null;
     if (
       !isValidOAuthState(state) ||
@@ -360,7 +366,8 @@ export function createGoogleOAuthRouter(
       (client === "native" && !nativeReturn) ||
       // A web flow whose return origin is not allowlisted has nowhere to land.
       (client !== "native" && returnOrigins[client] === null) ||
-      !isValidPkceChallenge(challenge)
+      !isValidPkceChallenge(challenge) ||
+      purpose === null
     ) {
       logGoogleOAuth("op=start result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
@@ -368,7 +375,7 @@ export function createGoogleOAuthRouter(
     }
     logGoogleOAuth("op=start result=redirect");
     // 302, and `Location` only — the params are already in the URL the client is sent to.
-    res.redirect(302, oauth.authorizeUrl({ state, challenge }));
+    res.redirect(302, oauth.authorizeUrl({ state, challenge, ...(purpose ? { purpose } : {}) }));
   });
 
   /** Authenticated desktop client: exact loopback URI, ephemeral port, mandatory S256 challenge. */
@@ -376,12 +383,13 @@ export function createGoogleOAuthRouter(
     const state = firstQueryValue(req.query.state);
     const challenge = firstQueryValue(req.query.challenge);
     const redirectUri = firstQueryValue(req.query.redirectUri);
+    const purpose = calendarLinkPurpose(req.query.purpose);
     if (!desktopClientId) { res.status(503).json({ error: "desktop_client_unconfigured" }); return; }
     if (!isValidOAuthState(state) || oauthReturnClient(state) !== "web" ||
-        !isValidPkceChallenge(challenge) || !validDesktopRedirectUri(redirectUri)) {
+        !isValidPkceChallenge(challenge) || !validDesktopRedirectUri(redirectUri) || purpose === null) {
       res.status(400).json({ error: "invalid_request" }); return;
     }
-    res.status(200).json({ authorizationUrl: desktopOAuth(redirectUri).authorizeUrl({ state, challenge }) });
+    res.status(200).json({ authorizationUrl: desktopOAuth(redirectUri).authorizeUrl({ state, challenge, ...(purpose ? { purpose } : {}) }) });
   });
 
   /**
@@ -457,17 +465,23 @@ export function createGoogleOAuthRouter(
     );
   });
 
-  /** `POST /exchange { code, verifier }` — authed at the mount. Returns Google's payload. */
+  /**
+   * `POST /exchange { code, verifier, purpose? }` — authed at the mount. Returns Google's payload.
+   * A `calendar-link` exchange leaves autojoin and the Meet browser binding as they are; it adds
+   * the `grant` binding the browser sends back on revoke, when the Google subject was verified.
+   */
   router.post("/exchange", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const code = body.code;
     const verifier = body.verifier;
     const desktopRedirectUri = body.desktopRedirectUri;
+    const purpose = calendarLinkPurpose(body.purpose);
     if (
       !isBoundedString(code, MAX_CODE_LENGTH) ||
       !isBoundedString(verifier, MAX_VERIFIER_LENGTH) ||
       !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) ||
-      (desktopRedirectUri !== undefined && (!desktopClientId || !validDesktopRedirectUri(desktopRedirectUri)))
+      (desktopRedirectUri !== undefined && (!desktopClientId || !validDesktopRedirectUri(desktopRedirectUri))) ||
+      purpose === null
     ) {
       logGoogleOAuth("op=exchange result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
@@ -477,13 +491,15 @@ export function createGoogleOAuthRouter(
       const tenant = req.user?.address;
       if (options.autojoin && !tenant) { res.status(401).json({ error: "unauthorized" }); return; }
       const payload = await (desktopRedirectUri ? desktopOAuth(desktopRedirectUri) : oauth).exchangeCode({ code, verifier });
+      const tokens = [payload.access_token, payload.refresh_token].filter((token): token is string => !!token);
       // Compare after success against the latest binding, including a rebind during exchange.
-      if (options.autojoin) await options.autojoin.browserReconnect(tenant!.toLowerCase(), payload.subject,
-        [payload.access_token, payload.refresh_token].filter((token): token is string => !!token));
+      if (options.autojoin && !purpose) await options.autojoin.browserReconnect(tenant!.toLowerCase(), payload.subject, tokens);
+      const grant = purpose && options.autojoin && payload.subject
+        ? options.autojoin.calendarLinkGrant(payload.subject, tokens) : undefined;
       logGoogleOAuth(
         `op=exchange result=ok refresh_token=${payload.refresh_token === undefined ? "absent" : "present"}`,
       );
-      res.status(200).json(browserTokenPayload(payload));
+      res.status(200).json({ ...browserTokenPayload(payload), ...(grant ? { grant } : {}) });
     } catch (error) {
       respondUpstreamError(res, "exchange", error);
     }
@@ -509,15 +525,47 @@ export function createGoogleOAuthRouter(
     }
   });
 
-  /** `POST /revoke { token }` — upstream revocation. A failure is surfaced, never swallowed. */
+  /**
+   * `POST /revoke { token }` — upstream revocation. A failure is surfaced, never swallowed.
+   *
+   * With `purpose: "calendar-link"` it never touches autojoin, and Google is asked only when no
+   * other feature is known to hold the same grant. `calendarLinkConnected: true` on the Meet
+   * disconnect is the reverse: linking still holds the grant, so no token is revoked upstream.
+   */
   router.post("/revoke", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const token = body.token;
+    const purpose = calendarLinkPurpose(body.purpose);
+    if (purpose === null || (purpose && !isBoundedString(token, MAX_TOKEN_LENGTH))) {
+      logGoogleOAuth("op=revoke result=invalid_request");
+      res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    if (purpose) {
+      const linkToken = token as string;
+      const connectorConnected = body.connectorConnected === true;
+      try {
+        let result: CalendarLinkRelease;
+        if (options.autojoin) result = await options.autojoin.releaseCalendarLink(linkToken, body.grant, connectorConnected);
+        else if (connectorConnected) result = { status: "disconnected", upstreamRevoked: "kept", reason: "connector_holder" };
+        else {
+          // No autojoin here: nothing on this server holds a Google grant.
+          result = { status: "disconnected", upstreamRevoked: "ok", reason: "last_holder" };
+          try { await oauth.revoke(linkToken); } catch (error) {
+            if (!(error instanceof GoogleOAuthError && error.error === "invalid_token")) result.upstreamRevoked = "failed";
+          }
+        }
+        logGoogleOAuth(`op=revoke purpose=calendar-link result=${result.upstreamRevoked} reason=${result.reason}`);
+        res.status(result.upstreamRevoked === "failed" ? 502 : 200).json(result);
+      } catch (error) { respondUpstreamError(res, "revoke", error); }
+      return;
+    }
+    const calendarLinkConnected = body.calendarLinkConnected === true;
     if (options.autojoin && (token === undefined || isBoundedString(token, MAX_TOKEN_LENGTH))) {
       const tenant = req.user?.address;
       if (!tenant) { res.status(401).json({ error: "unauthorized" }); return; }
       try {
-        const result = await options.autojoin.disconnect(tenant.toLowerCase(), token as string | undefined);
+        const result = await options.autojoin.disconnect(tenant.toLowerCase(), token as string | undefined, { calendarLinkConnected });
         res.status(result.upstreamRevoked === "failed" ? 502 : 200).json(result);
       } catch (error) { respondUpstreamError(res, "revoke", error); }
       return;
@@ -525,6 +573,11 @@ export function createGoogleOAuthRouter(
     if (!isBoundedString(token, MAX_TOKEN_LENGTH)) {
       logGoogleOAuth("op=revoke result=invalid_request");
       res.status(400).json({ error: "invalid_request" });
+      return;
+    }
+    if (calendarLinkConnected) {
+      logGoogleOAuth("op=revoke result=kept reason=calendar_link_holder");
+      res.status(200).json({ status: "disconnected", upstreamRevoked: "not_applicable" });
       return;
     }
     try {

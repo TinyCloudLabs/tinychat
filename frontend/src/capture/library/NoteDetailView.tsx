@@ -43,6 +43,8 @@ import { privateRefusalCopy } from "@/capture/recorder/privateInstead";
 import { TranscribeAction } from "./TranscribeAction";
 import type { TranscribeActionProps } from "./TranscribeAction";
 import { HowThisGotHere } from "./HowThisGotHere";
+import { CalendarLinkChip } from "./CalendarLinkChip";
+import type { CalendarLinkController } from "./useCalendarLink";
 import { CombineActions } from "./combine/CombineActions";
 import { CombinedSummary } from "./combine/CombinedSummary";
 import type { CombineDetail } from "./combine/combinedView";
@@ -112,6 +114,8 @@ export interface NoteDetailViewProps {
   speakerNames?: SpeakerNamesController;
   /** The note's suggested speaker names; without them none is shown and the menu has no "Suggest names". */
   nameSuggestions?: NameSuggestionsController;
+  /** The note's calendar event; without it none is shown or offered. */
+  calendarLink?: CalendarLinkController;
   /** The owner is sharing it (TC-3195): a "Shared" badge before the meta line. */
   shared?: boolean;
 }
@@ -643,7 +647,8 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
         store={props.savedNote.store}
         layout={props.savedNote.layout}
         onBack={props.onBack}
-        transcript={<Transcript {...props} item={item} />}
+        // The saved note's own header is not this view's: the calendar event sits over the Transcript.
+        transcript={<><CalendarLinkChip calendarLink={props.calendarLink} /><Transcript {...props} item={item} /></>}
         activityControl={props.activityControl}
         footer={item.onPhone ? undefined : <HowThisGotHere source={item.source} read={metadata} onRetry={props.onRetry} />}
       />
@@ -657,6 +662,7 @@ function NoteDetailViewContent(props: NoteDetailViewProps) {
     <Frame title={title} pushed={props.pushed} onBack={props.onBack} activityControl={props.activityControl}>
       <header className="flex flex-col gap-1" data-testid="note-detail" data-note-id={item.id}>
         <NoteHeaderTitle item={item} title={title} pushed={props.pushed} meta={props.shared ? <><RowBadge>Shared</RowBadge> {noteMeta(item)}</> : noteMeta(item)} />
+        <CalendarLinkChip calendarLink={props.calendarLink} />
         {activityStatus && <div className="flex flex-wrap items-center gap-3" data-testid="note-detail-status"><p className={activityStatus.startsWith("Needs attention") ? "text-callout text-amber-700 dark:text-amber-300" : "text-callout text-muted-foreground"}>{activityStatus}</p>{statusJobs.flatMap((job) => job.action ? [job.action] : []).map((action, index) => <button key={`${action.label}:${index}`} type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={action.run}>{action.label}</button>)}{!statusJobs.some((job) => job.action) && activityRetry && <button type="button" className="min-h-11 text-callout text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={activityRetry}>Try again</button>}</div>}
         <CombineActions combine={props.combine} />
       </header>

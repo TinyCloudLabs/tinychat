@@ -91,7 +91,7 @@ export function createCalendarAutojoinRouter(options: { connection: CalendarAuto
     if (token !== undefined && (typeof token !== "string" || token.length === 0 || token.length > 4096)) {
       throw new CalendarAutojoinError("invalid_request", 400);
     }
-    const result = await connection.disconnect(tenant, token);
+    const result = await connection.disconnect(tenant, token, { calendarLinkConnected: req.body?.calendarLinkConnected === true });
     res.status(result.upstreamRevoked === "failed" ? 502 : 200).json(result);
   }));
   return router;

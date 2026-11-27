@@ -25,9 +25,10 @@ const MAX_CHOICES = 12;
 /**
  * A speaker's label as stored; tapping it renames that speaker on every line of the note. A speaker's first label in
  * the transcript (`firstOfSpeaker`, decided where the turns are laid out) also shows a suggested name, when there is
- * one: as a question with Use and Dismiss, and the question opens the words of the transcript it rests on. The
- * later labels stay plain: a call has a hundred turns. Nothing is renamed until Use, which is a rename like a
- * typed one; the rename field of every label starts with the suggested name.
+ * one: as a question with Use and Dismiss, and the question opens what the name rests on (the words of the
+ * transcript, or that the person was invited to the meeting). The later labels stay plain: a call has a hundred
+ * turns. Nothing is renamed until Use, which is a rename like a typed one; the rename field of every label starts
+ * with the suggested name.
  */
 export function SpeakerLabel(props: { original: string; firstOfSpeaker?: boolean; className?: string }) {
   const speakers = useContext(SpeakerNamesContext);

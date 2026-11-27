@@ -4,7 +4,7 @@ import { assertKvResult, isKvMissingKeyResult, withSessionRefresh } from "@tinyb
 import {
   BackendStorageLane, BackendStorageLaneTimeout, REQUEST_LANE_WAIT_MS, type BackendStorageLaneRunOptions,
 } from "./backend-storage-lane.js";
-import { normalizeGoogleMeetUrl } from "./google-calendar.js";
+import { normalizeGoogleMeetUrl } from "@tinyboilerplate/core";
 import type { CreateMeetingInput } from "./transcription-api.js";
 import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS, type CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
