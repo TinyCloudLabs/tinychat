@@ -1,6 +1,7 @@
 // The bot's panel (TC-3325), opened from the pill at the top of the bot view: the bot's avatar and name, what it did
 // on its computer (the activity lines, newest first, with times) and where it runs. A right-hand column from 1024 px,
 // a sheet below that. `ActivityPanel` is the recorder's panel, hence the name.
+import type { ReactNode } from "react";
 import { XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,9 +29,11 @@ export interface BotPanelProps {
   onEdit?: () => void;
   /** Delete bot. Absent on Main, and when the bot cannot be changed from here. */
   onDelete?: () => void;
+  /** Main bot access, web, asks, Courier and New chat settings. */
+  mainSettings?: ReactNode;
 }
 
-export function BotPanel({ bot, activity, awake, onClose, onEdit, onDelete }: BotPanelProps) {
+export function BotPanel({ bot, activity, awake, onClose, onEdit, onDelete, mainSettings }: BotPanelProps) {
   const newestFirst = [...activity].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   return (
     <div data-bot-panel={bot.key} className="flex flex-col gap-6 px-5 pb-6 pt-4">
@@ -68,6 +71,11 @@ export function BotPanel({ bot, activity, awake, onClose, onEdit, onDelete }: Bo
         <p className="text-callout" data-bot-environment="">{BOT_ACTIVITY_STRINGS.environmentRow(bot.private ? "private" : "regular", awake)}</p>
       </section>
       {bot.key === "main" && bot.private ? <CourierThreads /> : null}
+      {mainSettings ? (
+        <section className="flex flex-col gap-5 border-t border-border pt-5" data-bots-main-settings="">
+          {mainSettings}
+        </section>
+      ) : null}
       {onEdit || onDelete ? (
         <div className="flex flex-col gap-2">
           {onEdit ? <Button type="button" variant="outline" onClick={onEdit}>{BOT_MANAGE_STRINGS.edit}</Button> : null}

@@ -9,7 +9,7 @@ import type { BotChatApi } from "./botChatApi";
 import type { BotRosterApi } from "./botRosterApi";
 import { botsApi as defaultBotsApi, type BotsApi } from "./botsApi";
 import type { BotHistoryAccess } from "./BotsChat";
-import { useChatView } from "./chatViewSetting";
+import { useSavedChatView } from "./chatViewSetting";
 import { useBotsAdmitted } from "./useBotsAdmitted";
 import { preloadBotNav } from "./lazyBotNav";
 
@@ -31,20 +31,21 @@ export interface ChatSlotProps {
 }
 
 export function ChatSlot({ classic, account, tcw, active, onReconnect, api = defaultBotsApi, chatApi, rosterApi, history }: ChatSlotProps) {
-  const [view] = useChatView(account);
-  const chosen = account !== null && view === "bots";
-  const admitted = useBotsAdmitted(chosen ? api : null);
-  const bots = chosen && admitted && account !== null;
-  // Fetched while the backend is asked about the account, so the Bots view and its navigation rows are in when it says yes.
+  const [saved] = useSavedChatView(account);
+  // Admitted accounts default to Bots unless they explicitly switched back to Classic in Settings.
+  const wantsBots = account !== null && saved !== "classic";
+  const admitted = useBotsAdmitted(wantsBots ? api : null);
+  const bots = wantsBots && admitted === true;
+  // Preload BotsSurface once the backend admits the account (or immediately when Bots was already saved).
   useEffect(() => {
-    if (chosen) void Promise.all([BotsSurface.preload(), preloadBotNav()]).catch(() => {});
-  }, [chosen]);
+    if (saved === "bots" || bots) void Promise.all([BotsSurface.preload(), preloadBotNav()]).catch(() => {});
+  }, [saved, bots]);
   return (
     <>
       <div className={bots ? "hidden" : "h-full"} data-chat-view="classic">{classic}</div>
       {bots ? (
         // Keyed by account: another account's bots, conversations and drafts never carry over.
-        <BotsSurface key={account} account={account} active={active} onReconnect={onReconnect} chatApi={chatApi} rosterApi={rosterApi}
+        <BotsSurface key={account} account={account} active={active} onReconnect={onReconnect} api={api} chatApi={chatApi} rosterApi={rosterApi}
           tcw={tcw} history={history} />
       ) : null}
     </>

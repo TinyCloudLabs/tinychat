@@ -9,6 +9,7 @@ import { navKindFor } from "@/shell/navItems";
 import { MAIN_BOT } from "./BotAvatar";
 import { PhoneBotStrip } from "./BotNav";
 import { botChatApi as defaultChatApi, botRosterApi as defaultRosterApi, type BotChatApi } from "./botChatApi";
+import { botsApi as defaultBotsApi, type BotsApi } from "./botsApi";
 import { botForPath, botPath, saveLastBot } from "./botPath";
 import type { BotRosterApi, CreateBotInput, RosterBot } from "./botRosterApi";
 import { BotsChat, viewableBots, type BotHistoryAccess, type ControllerBot } from "./BotsChat";
@@ -21,10 +22,11 @@ import { useBots } from "./useBots";
 
 const faceOf = ({ key, name, shape, colour }: RosterBot | ControllerBot) => (shape && colour ? { key, name, shape, colour } : MAIN_BOT);
 
-export function BotsSurface({ account, active, onReconnect, chatApi = defaultChatApi, rosterApi = defaultRosterApi, tcw, history }: {
+export function BotsSurface({ account, active, onReconnect, api = defaultBotsApi, chatApi = defaultChatApi, rosterApi = defaultRosterApi, tcw, history }: {
   account: string;
   active: boolean;
   onReconnect?: () => void;
+  api?: BotsApi;
   chatApi?: BotChatApi;
   rosterApi?: BotRosterApi;
   tcw: TinyCloudWeb;
@@ -76,7 +78,7 @@ export function BotsSurface({ account, active, onReconnect, chatApi = defaultCha
   return (
     <div className="h-full" data-chat-view="bots">
       <BotsChat controller={controller} selected={selected} faceOf={faceOf} history={history === undefined ? sessionHistory : history} active={active} onReconnect={onReconnect}
-        chatApi={chatApi} onChats={setChats} strip={phone ? <PhoneBotStrip /> : null} />
+        chatApi={chatApi} onChats={setChats} strip={phone ? <PhoneBotStrip /> : null} account={account} tcw={tcw} mainApi={api} />
       {roster ? (
         <CreateBotDialog open={creating} onOpenChange={setCreating} roster={roster} onCreate={create}
           onCreated={(bot) => navigate(botPath(bot.key))} />

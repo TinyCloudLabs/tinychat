@@ -14,14 +14,19 @@ const CHANGE_EVENT = "tinychat:chat-view";
 
 const keyFor = (account: string) => `${CHAT_VIEW_KEY_PREFIX}${account.toLowerCase()}`;
 
-/** The account's saved choice, or the default when nothing, something unknown, or no storage is there. */
-export function readChatView(account: string): ChatView {
+/** The account's explicitly saved choice, or null when it has never picked one (or storage is unavailable). */
+export function readSavedChatView(account: string): ChatView | null {
   try {
     const saved = window.localStorage.getItem(keyFor(account));
-    return saved === "classic" || saved === "bots" ? saved : DEFAULT_CHAT_VIEW;
+    return saved === "classic" || saved === "bots" ? saved : null;
   } catch {
-    return DEFAULT_CHAT_VIEW;
+    return null;
   }
+}
+
+/** The account's saved choice, or the default when nothing, something unknown, or no storage is there. */
+export function readChatView(account: string): ChatView {
+  return readSavedChatView(account) ?? DEFAULT_CHAT_VIEW;
 }
 
 export function saveChatView(account: string, view: ChatView): void {
@@ -31,15 +36,15 @@ export function saveChatView(account: string, view: ChatView): void {
   window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { account: account.toLowerCase(), view } }));
 }
 
-/** The account's view, following changes made elsewhere in this page and in other tabs. Null account: the default. */
-export function useChatView(account: string | null): [ChatView, (view: ChatView) => void] {
-  const [saved, setSaved] = useState<{ account: string | null; view: ChatView }>(() => ({
+/** The account's explicitly saved choice (null if unset), following changes made elsewhere in the page and other tabs. */
+export function useSavedChatView(account: string | null): [ChatView | null, (view: ChatView) => void] {
+  const [saved, setSaved] = useState<{ account: string | null; view: ChatView | null }>(() => ({
     account,
-    view: account ? readChatView(account) : DEFAULT_CHAT_VIEW,
+    view: account ? readSavedChatView(account) : null,
   }));
   useEffect(() => {
     if (!account) return;
-    const refresh = () => setSaved({ account, view: readChatView(account) });
+    const refresh = () => setSaved({ account, view: readSavedChatView(account) });
     const changed = (event: Event) => {
       const detail: unknown = event instanceof CustomEvent ? event.detail : null;
       if (detail && typeof detail === "object" && "account" in detail && "view" in detail
@@ -58,6 +63,12 @@ export function useChatView(account: string | null): [ChatView, (view: ChatView)
   const set = useCallback((view: ChatView) => {
     if (account) saveChatView(account, view);
   }, [account]);
-  const view = saved.account === account ? saved.view : account ? readChatView(account) : DEFAULT_CHAT_VIEW;
+  const view = saved.account === account ? saved.view : account ? readSavedChatView(account) : null;
   return [view, set];
+}
+
+/** The account's view, following changes made elsewhere in this page and in other tabs. Null account: the default. */
+export function useChatView(account: string | null): [ChatView, (view: ChatView) => void] {
+  const [saved, set] = useSavedChatView(account);
+  return [saved ?? DEFAULT_CHAT_VIEW, set];
 }

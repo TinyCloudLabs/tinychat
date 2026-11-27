@@ -76,14 +76,24 @@ const slot = (props: ReturnType<typeof fakes>["props"]) => (
   <ChatSlot account={ACCOUNT} tcw={{} as TinyCloudWeb} active classic={<p data-classic="">Classic chat</p>} {...props} />
 );
 
-test("an account on Classic sees the classic chat and makes no bots calls", async () => {
+test("an account explicitly on Classic sees the classic chat and makes no bots calls", async () => {
   restore = installDom();
+  saveChatView(ACCOUNT, "classic");
   const { calls, props } = fakes(roster());
   const host = await render("/chat", slot(props));
   expect(host.querySelector('[data-chat-view="classic"]')!.className).not.toContain("hidden");
   expect(host.querySelector('[data-chat-view="bots"]')).toBeNull();
   expect(calls).toEqual([]);
   expect(botsNavStore.snapshot()).toBeNull();
+});
+
+test("an admitted account with no saved preference defaults to Bots", async () => {
+  restore = installDom();
+  const { props } = fakes(roster());
+  const host = await render(`/chat/bot/${RESEARCH}`, slot(props));
+  expect(host.querySelector("h1")?.textContent).toContain("Research");
+  expect(host.querySelector('[data-chat-view="classic"]')!.className).toContain("hidden");
+  expect(host.querySelector('[data-chat-view="bots"]')).not.toBeNull();
 });
 
 test("Bots shows the bot the address names, keeps the classic chat mounted, and lists the bots for the navigation", async () => {
