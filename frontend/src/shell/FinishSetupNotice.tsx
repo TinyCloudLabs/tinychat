@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { readRegistryUnregistered, type RegistryPublishClient } from "@/lib/registryConsent/adapter";
@@ -37,7 +38,9 @@ export function FinishSetupNotice({ open, onPublish, onCancel }: { open: boolean
  * Handles a signed-in page opened (or navigated, by the Home card) to `?finish-setup=registry`: the query is removed
  * first. From the card the SDK is asked to publish at once; from a pasted or shared link the notice shows and the SDK is
  * not asked until Publish. `ready` is true only for a signed-in client, so a link opened signed out waits for sign-in.
- * `searchKey` is the router's search string: a card tap changes it and runs this again.
+ * `searchKey` changes on every navigation (the router's `location.key`, see RoutedFinishSetupLinkHost), so each card tap
+ * runs this again. The query is stripped from the address with a raw history.replaceState the router does not see, so
+ * the router's own search string stays "?finish-setup=registry" and could not tell a second tap from the first.
  *
  * The notice belongs to the client it was opened for. It closes, and nothing is kept, when the client changes or sign-in
  * ends, so the next account never sees it and Publish never signs for a different account. The query is gone from the
@@ -99,4 +102,12 @@ export function FinishSetupLinkHost({
       }}
     />
   );
+}
+
+/**
+ * The host App mounts: keyed on the router's `location.key`, which every navigation changes. A second card tap after a
+ * refused or unavailable answer is a new navigation to the same query, so it runs the link again.
+ */
+export function RoutedFinishSetupLinkHost(props: Omit<Parameters<typeof FinishSetupLinkHost>[0], "searchKey">) {
+  return <FinishSetupLinkHost {...props} searchKey={useLocation().key} />;
 }
