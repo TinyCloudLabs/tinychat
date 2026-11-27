@@ -1,10 +1,8 @@
-// TC-3547: when TinyChat asks the SDK to publish the owner's registry record, and the `finish-setup` link that asks it
-// again after a "Not now". Everything stays inert while the pinned SDK has
-// no `ensureOwnerRegistryRecord`.
-import { isLegacyOrigin, CANONICAL_ORIGIN } from "../originMove";
-import { ensureRegistryRecord, canPublishRegistryRecord, type RegistryPublishClient, type RegistryPublishResult } from "./adapter";
-import { REGISTRY_CONSENT_MODAL_ENABLED } from "./copy";
+// TC-3547: the `finish-setup=registry` link, and the Home card that navigates to it. The SDK publishes only from TinyCloud
+// One and Home (an exact origin match) and signs nothing elsewhere, so the host asks every time and acts on the verdict.
+import { ensureRegistryRecord, type RegistryPublishClient, type RegistryPublishOutcome } from "./adapter";
 import { registryDismissedStore, type DismissedStore } from "./dismissed";
+import { openRegistrySetupLink } from "./setupLink";
 
 /** The SDK's `FINISH_SETUP_REGISTRY_INTENT` ("finish-setup=registry"), matched as a name and a fixed value. */
 const INTENT_PARAM = "finish-setup";
@@ -13,14 +11,9 @@ const INTENT_VALUE = "registry";
 export const FINISH_SETUP_INTENT_SEARCH = `?${INTENT_PARAM}=${INTENT_VALUE}`;
 
 export type RegistryPublishEnv = {
-  location: Pick<Location, "origin" | "hostname" | "pathname" | "search" | "hash">;
+  location: Pick<Location, "origin" | "pathname" | "search" | "hash">;
   history: Pick<History, "replaceState" | "state">;
 };
-
-/** TinyCloud's own pages. The SDK's explicit publish has no origin check of its own, so the host checks. */
-export function isFirstPartyPublishOrigin(location: Pick<Location, "origin" | "hostname">): boolean {
-  return location.origin === CANONICAL_ORIGIN || isLegacyOrigin(location);
-}
 
 export function hasFinishSetupRegistryIntent(search: string): boolean {
   return new URLSearchParams(search).get(INTENT_PARAM) === INTENT_VALUE;
@@ -34,41 +27,53 @@ export function withoutFinishSetupIntent(location: Pick<Location, "pathname" | "
   return location.pathname + (query ? `?${query}` : "") + location.hash;
 }
 
-export type FinishSetupOutcome = RegistryPublishResult | "no-intent" | "off" | "not-first-party";
+/** "notice": the link was opened without the card (a pasted or shared link), so the SDK was not asked: show the notice. */
+export type FinishSetupOutcome = RegistryPublishOutcome | "no-intent" | "notice";
 
 /**
- * A signed-in first-party page opened with `?finish-setup=registry`: remove the query FIRST (so a reload or a shared
- * link cannot reopen the consent), then ask the SDK to publish past an earlier "Not now". The caller passes only a
- * signed-in client.
+ * The router state the Home card navigates with: the owner just read the card's words. It lives in the history entry
+ * (react-router keeps it at `history.state.usr`), never in the address, so a pasted or shared link cannot carry it.
  */
-export async function runFinishSetupIntent(
-  tcw: RegistryPublishClient | null | undefined,
-  env: RegistryPublishEnv,
-  enabled: boolean = REGISTRY_CONSENT_MODAL_ENABLED,
-): Promise<FinishSetupOutcome> {
-  if (!enabled || !canPublishRegistryRecord(tcw)) return "off";
-  if (!hasFinishSetupRegistryIntent(env.location.search)) return "no-intent";
-  if (!isFirstPartyPublishOrigin(env.location)) return "not-first-party";
-  env.history.replaceState(env.history.state, "", withoutFinishSetupIntent(env.location));
-  return ensureRegistryRecord(tcw, { ignoreDismissed: true });
+export const FINISH_SETUP_CARD_STATE = { finishSetupFromCard: true } as const;
+
+/** Whether a history entry's state (`window.history.state`) is the card's marker. */
+export function arrivedFromFinishSetupCard(historyState: unknown): boolean {
+  if (typeof historyState !== "object" || historyState === null || !("usr" in historyState)) return false;
+  const usr = historyState.usr;
+  return typeof usr === "object" && usr !== null && "finishSetupFromCard" in usr && usr.finishSetupFromCard === true;
 }
 
 /**
- * After a fresh first-party sign-in: ask the SDK to publish if the owner has no record. TinyChat signs in with
- * `autoBootstrapAccount: false`, which is also what stops the SDK from doing this itself at sign-in, so the host asks.
- * The host skips it after a "Not now" (dismissed.ts); the SDK checks the registry and asks consent. A `finish-setup` link on the page is left to
- * `runFinishSetupIntent`, so the two never ask at once.
+ * Ask the SDK to publish. On "published" or "already-current" the account's flag is written (dismissed.ts), so the card
+ * stays hidden for it on this device. On "needs-one" the owner is sent to TinyCloud One to finish there (setupLink.ts).
+ * A refused signature, "unavailable" or a thrown error writes nothing, so the card keeps showing.
  */
-export async function runSignInRegistryPublish(
-  tcw: RegistryPublishClient | null | undefined,
-  env: RegistryPublishEnv,
-  enabled: boolean = REGISTRY_CONSENT_MODAL_ENABLED,
+export async function publishRegistryRecord(
+  tcw: RegistryPublishClient,
+  currentOrigin: string,
+  openSetupLink: (currentOrigin: string) => Promise<void> = openRegistrySetupLink,
   dismissed: DismissedStore = registryDismissedStore,
-): Promise<RegistryPublishResult | "off" | "not-first-party" | "deferred-to-link" | "dismissed"> {
-  if (!enabled || !canPublishRegistryRecord(tcw)) return "off";
-  if (!isFirstPartyPublishOrigin(env.location)) return "not-first-party";
-  if (hasFinishSetupRegistryIntent(env.location.search)) return "deferred-to-link";
-  // An owner who pressed "Not now" before is not asked at sign-in again; the finish-setup link is how they come back.
-  if (tcw.did && dismissed.read(tcw.did)) return "dismissed";
-  return ensureRegistryRecord(tcw);
+): Promise<RegistryPublishOutcome> {
+  const outcome = await ensureRegistryRecord(tcw);
+  if ((outcome === "published" || outcome === "already-current") && tcw.did) dismissed.write(tcw.did);
+  if (outcome === "needs-one") await openSetupLink(currentOrigin);
+  return outcome;
+}
+
+/**
+ * A signed-in page opened with `?finish-setup=registry`: remove the query FIRST (so a reload or a shared link cannot
+ * reopen the signature prompt or the notice). When the owner just tapped the card the SDK is asked at once. Otherwise the
+ * SDK is not asked and "notice" comes back, so the page can show the public-record notice first. The caller passes only
+ * a signed-in client.
+ */
+export async function runFinishSetupIntent(
+  tcw: RegistryPublishClient,
+  env: RegistryPublishEnv,
+  openSetupLink: (currentOrigin: string) => Promise<void> = openRegistrySetupLink,
+  dismissed: DismissedStore = registryDismissedStore,
+): Promise<FinishSetupOutcome> {
+  if (!hasFinishSetupRegistryIntent(env.location.search)) return "no-intent";
+  env.history.replaceState(env.history.state, "", withoutFinishSetupIntent(env.location));
+  if (!arrivedFromFinishSetupCard(env.history.state)) return "notice";
+  return publishRegistryRecord(tcw, env.location.origin, openSetupLink, dismissed);
 }

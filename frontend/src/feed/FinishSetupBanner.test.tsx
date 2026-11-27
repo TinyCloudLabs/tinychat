@@ -19,15 +19,16 @@ afterEach(async () => {
 });
 
 let search = "";
-function Probe() { search = useLocation().search; return null; }
+let routerState: unknown = null;
+function Probe() { const location = useLocation(); search = location.search; routerState = location.state; return null; }
 
-async function mount(visible: Parameters<typeof FinishSetupBanner>[0]["visible"], client = fakeSdk().client) {
+async function mount(visible: Parameters<typeof FinishSetupBanner>[0]["visible"], client = fakeSdk().client, dismissed = memoryDismissedStore()) {
   restore = installDom();
   search = "";
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  await act(async () => root!.render(<MemoryRouter initialEntries={["/chat/feed"]}><Probe /><FinishSetupBanner tcw={client} visible={visible} /></MemoryRouter>));
+  await act(async () => root!.render(<MemoryRouter initialEntries={["/chat/feed"]}><Probe /><FinishSetupBanner tcw={client} visible={visible} dismissed={dismissed} /></MemoryRouter>));
   return {
     text: () => container.textContent ?? "",
     click: (label: string) => act(async () => {
@@ -36,44 +37,48 @@ async function mount(visible: Parameters<typeof FinishSetupBanner>[0]["visible"]
   };
 }
 
-test("hidden while the consent switch is off (the shipped default)", async () => {
-  const view = await mount(undefined);
+test("hidden when the app cannot open TinyCloud One", async () => {
+  const view = await mount((tcw) => finishSetupBannerVisible(tcw, async () => true, () => false, memoryDismissedStore()));
   expect(view.text()).toBe("");
 });
 
-test("visible for an unregistered account that has not said Not now (switch on, in this test only)", async () => {
+test("visible for an unregistered account that has not tapped the button on this device", async () => {
   const sdk = fakeSdk();
-  const view = await mount((tcw) => finishSetupBannerVisible(tcw, true, async () => true, memoryDismissedStore()), sdk.client);
+  const view = await mount((tcw) => finishSetupBannerVisible(tcw, async () => true, () => true, memoryDismissedStore()), sdk.client);
   expect(view.text()).toContain(FINISH_SETUP_BANNER_COPY.support);
   expect(view.text()).toContain(FINISH_SETUP_BANNER_COPY.action);
 });
 
-test("hidden after Not now: the SDK's flag keeps it away", async () => {
+test("hidden once the owner has tapped the button on this device", async () => {
   const sdk = fakeSdk();
   const store = memoryDismissedStore();
   store.write(sdk.client.did);
-  const view = await mount((tcw) => finishSetupBannerVisible(tcw, true, async () => true, store), sdk.client);
+  const view = await mount((tcw) => finishSetupBannerVisible(tcw, async () => true, () => true, store), sdk.client, store);
   expect(view.text()).toBe("");
 });
 
 test("hidden for an account that already has its record", async () => {
-  const view = await mount((tcw) => finishSetupBannerVisible(tcw, true, async () => false, memoryDismissedStore()));
+  const view = await mount((tcw) => finishSetupBannerVisible(tcw, async () => false, () => true, memoryDismissedStore()));
   expect(view.text()).toBe("");
 });
 
-test("the action goes to the finish-setup address, and the page's intent path then publishes past a Not now", async () => {
-  const sdk = fakeSdk(async () => true);
-  const view = await mount(async () => true, sdk.client);
+test("the button writes nothing, goes to the finish-setup address, and the page's intent path then publishes and hides the card", async () => {
+  const sdk = fakeSdk("published");
+  const store = memoryDismissedStore();
+  const view = await mount(async () => true, sdk.client, store);
+  expect(store.read(sdk.client.did)).toBe(false);
   await view.click(FINISH_SETUP_BANNER_COPY.action);
+  expect(store.read(sdk.client.did)).toBe(false);
   expect(search).toBe(FINISH_SETUP_INTENT_SEARCH);
   expect(hasFinishSetupRegistryIntent(search)).toBe(true);
-  expect(view.text()).toBe("");
+  expect(view.text()).toContain(FINISH_SETUP_BANNER_COPY.action);
   const replaced: string[] = [];
   const outcome = await runFinishSetupIntent(sdk.client, {
-    location: { origin: "https://tinycloud.one", hostname: "tinycloud.one", pathname: "/chat/feed", search, hash: "" },
-    history: { state: null, replaceState: (_state, _title, url) => { replaced.push(String(url)); } },
-  }, true);
+    location: { origin: "https://tinycloud.one", pathname: "/chat/feed", search, hash: "" },
+    history: { state: { usr: routerState }, replaceState: (_state, _title, url) => { replaced.push(String(url)); } },
+  }, undefined, store);
   expect(outcome).toBe("published");
+  expect(store.read(sdk.client.did)).toBe(true);
   expect(replaced).toEqual(["/chat/feed"]);
-  expect(sdk.calls).toEqual([{ options: { ignoreDismissed: true } }]);
+  expect(sdk.calls).toEqual([[]]);
 });
