@@ -30,7 +30,7 @@ export function ResponsiveSheet({ footer, ...props }: ResponsiveSheetProps) {
       </BottomSheet>
     );
   }
-  const { open, onOpenChange, dismissible = true, modal = true, onOpenAutoFocus, title, description, children, contentProps } = props;
+  const { open, onOpenChange, dismissible = true, modal = true, onOpenAutoFocus, title, description, children, contentProps, headerActions } = props;
   const block = (event: Event) => {
     if (!dismissible) event.preventDefault();
   };
@@ -51,6 +51,7 @@ export function ResponsiveSheet({ footer, ...props }: ResponsiveSheetProps) {
       >
         <div className="flex min-h-13 shrink-0 items-center gap-2 pl-4 pr-2 pt-1">
           <DialogTitle className="min-w-0 flex-1 font-display text-title-2 [overflow-wrap:anywhere]">{title}</DialogTitle>
+          {headerActions}
           {dismissible && (
             <DialogPrimitive.Close
               aria-label="Close"

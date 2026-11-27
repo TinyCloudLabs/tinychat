@@ -77,7 +77,7 @@ Anything else gets an empty 401.
   then exactly one `done` `{ messageId }` or `error` `{ code, message }`. One message at a time per bot; a
   second send gets `busy`. If the caller disconnects, the turn still finishes and lands in the history. A reply
   longer than `BOTS_MAX_TURN_BYTES` is cut off (the agent's turn is aborted, the stream ends with
-  `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends the same way and its sandbox is
+  `bot_unavailable`); a turn with no result within `BOTS_TURN_TIMEOUT_MS` ends with `turn_timeout` and its sandbox is
   killed. A caller that stops reading gets its stream dropped once 1 MiB is queued, instead of buffering more.
 - `GET /v1/bots/main/messages` returns `{ messages: [{ id, role, text, at }] }`, newest last, at most 50. A bot
   that has never run answers `[]` without starting a sandbox; otherwise this starts the sandbox if it is stopped.
@@ -440,11 +440,11 @@ call and returns the reply with the value hidden.
 ### Proposals from Main
 
 Main can propose an action for the owner to approve with one tap; the service then does it, exactly once. The first
-kind is `message_bots`: one message to 2 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
+kind is `message_bots`: one message to 1 to 8 of the owner's other bots. It is the `propose_action` tool of the `app`
 MCP server, listed and served under the same setting as `ask_owner` (on until the owner turns it off). `message_bot` reaches one bot per
-owner message (the same bot again is fine); a message for more bots goes through a proposal.
+owner message (the same bot again is fine); a message for more bots goes through a proposal. After a private read, even a message to one bot goes through an exact owner-approved proposal. The private-data mark stays set for unapproved exports.
 
-- `propose_action { kind: "message_bots", targets, text }`: `targets` are 2 to 8 distinct keys of bots Main may
+- `propose_action { kind: "message_bots", targets, text }`: `targets` are 1 to 8 distinct keys of bots Main may
   message in this turn (never `main`), `text` is 1 to 2000 characters, kept as plain text with its lines (control,
   direction and format characters removed). A turn relayed from another bot may message no bot, so it cannot propose.
   It answers `{ id, state: "pending" }` at once. Refusals are fixed sentences (`ACTION_ERRORS` in `actions.ts`).

@@ -418,7 +418,7 @@ export class Gateway {
     this.#meetings = deps.meetings ?? new MeetingDesk({ backendOrigin: "", backendCallSecret: undefined });
     this.#readsGiven = deps.meetings !== undefined;
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
-    this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore, botId => this.#meetings.held(botId));
+    this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore);
     this.#secrets = deps.secretNet ? deps.secrets : undefined;
     this.#secretNet = deps.secretNet;
   }

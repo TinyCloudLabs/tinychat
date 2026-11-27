@@ -1,5 +1,7 @@
 # TinyChat Memory — v1 Implementation Plan
 
+> This plan records v1 decisions. It does not impose requirements on every future processing path. See [current boundary guidance](./data-processing-boundaries.md).
+
 *Companion to [`memory-research.md`](./memory-research.md). This is the build spec: a Gemini-style, single-document, injected-every-turn memory system, scoped per space, built entirely in the frontend on the existing per-space SQLite (`tcw.sql`). No backend changes, no new manifest capability, no embeddings.*
 
 ---

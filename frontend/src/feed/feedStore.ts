@@ -47,6 +47,13 @@ export const HOME_FEED_DEFAULT_KEY = "home-feed-default-view";
 const RECONCILE_MS = 5 * 60_000;
 /** How long a hidden page keeps its live-update stream; a shorter absence needs no catch-up of its own. */
 const FRESH_MS = 60_000;
+/** Waits before each new stream after one failed for good; the last repeats until a stream is ready. */
+const RETRY_MS = [2_000, 5_000, 15_000, 30_000, 60_000];
+/**
+ * How long a stream must stay ready for its failure to start the backoff over. Every new stream costs the node a
+ * ticket, a freshness check and a reload; one that drops soon after its ready keeps climbing the steps instead.
+ */
+const STABLE_MS = 30_000;
 /** Bump when the registry schema batch below changes, so devices re-run it once. */
 const FEED_SCHEMA_VERSION = 1;
 
@@ -176,6 +183,11 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   let wakeTimer: number | undefined;
   let renewal: number | undefined;
   let streamError: Error | undefined;
+  let retryTimer: number | undefined;
+  /** Failed streams since the last one that stayed ready STABLE_MS: the step of RETRY_MS the next retry waits. */
+  let retries = 0;
+  /** When the current stream first became ready. */
+  let readyAt: number | undefined;
   let localReads = 0;
   /** A device copy or a registry read has named the agents the stream covers. */
   let sourcesKnown = false;
@@ -225,6 +237,30 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
 
   function stop() {
     controller?.abort(); controller = undefined;
+    window.clearTimeout(retryTimer); retryTimer = undefined; retries = 0; readyAt = undefined;
+  }
+
+  // A failed stream is never replaced by the reload its failure wakes (that
+  // `connect()` keeps the failed controller), only by this timer, the renewal,
+  // a foreground, an `online` event or the owner's Try again. A hidden page
+  // skips its turn: coming back reconnects.
+  function retryLater() {
+    window.clearTimeout(retryTimer);
+    retryTimer = window.setTimeout(() => {
+      retryTimer = undefined;
+      if (document.visibilityState === "hidden") return;
+      const failed = controller;
+      connect(true);
+      // Skipped at connect's first guard (the device copy is still being read, or the agents are not known yet):
+      // nothing else would try before the renewal, so wait the next step.
+      if (controller === failed) retryLater();
+    }, RETRY_MS[Math.min(retries++, RETRY_MS.length - 1)]);
+  }
+
+  /** A new stream at once, the backoff from its first step: the owner asked, or the browser is back online. */
+  function reconnect() {
+    retries = 0;
+    connect(true);
   }
 
   function connect(force = false) {
@@ -237,6 +273,8 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     const hooks: FeedHooks = tcw.hooks;
     if (!force && controller && !controller.signal.aborted && streamKey === nextKey && streamHooks === hooks) return;
     controller?.abort();
+    window.clearTimeout(retryTimer); retryTimer = undefined;
+    readyAt = undefined;
     const request = new AbortController();
     controller = request;
     streamKey = nextKey;
@@ -255,6 +293,9 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
         if (!request.signal.aborted) {
           streamError = error instanceof Error ? error : new Error(String(error));
           wake();
+          if (readyAt !== undefined && Date.now() - readyAt >= STABLE_MS) retries = 0;
+          readyAt = undefined;
+          retryLater();
         }
       }
     })();
@@ -291,6 +332,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
   async function catchUp(request: AbortController) {
     const recovering = streamError !== undefined;
     streamError = undefined;
+    readyAt ??= Date.now();
     const pending = feedLoad;
     const current = await fingerprint().catch(() => undefined);
     await pending?.catch(() => {});
@@ -790,10 +832,12 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
     markSeen: (entry) => appendView(entry, "seen"),
     snooze: (entry, until) => appendView(entry, "snoozed", until),
     async setDefaultSelector(selector) { assertAccount(); await setSetting(tcw, HOME_FEED_DEFAULT_KEY, selector); },
+    reconnect,
     subscribe(listener) {
       listeners.add(listener);
       if (listeners.size === 1) {
         document.addEventListener("visibilitychange", foreground);
+        window.addEventListener("online", reconnect);
         renewal = window.setInterval(() => { if (document.visibilityState !== "hidden") connect(true); }, RECONCILE_MS);
         connect();
       }
@@ -805,6 +849,7 @@ export function createHomeFeedSource(tcw: TinyCloudWeb): HomeFeedSource {
           window.clearTimeout(hiddenTimer); hiddenTimer = undefined; hiddenAt = undefined;
           window.clearInterval(renewal); renewal = undefined;
           document.removeEventListener("visibilitychange", foreground);
+          window.removeEventListener("online", reconnect);
         }
       };
     },
