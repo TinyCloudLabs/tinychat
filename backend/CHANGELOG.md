@@ -1,5 +1,37 @@
 # @tinychat/backend
 
+## 0.14.7
+
+### Patch Changes
+
+- ed7ff22: Keep a deleted Fireflies meeting out of the server-side import. The server holds a one-way code of the meeting ID and the delete time until the user allows those meetings back or deletes the account.
+
+  Details: TC-4414
+
+## 0.14.7-beta.0
+
+### Patch Changes
+
+- ed7ff22: Keep a deleted Fireflies meeting out of the server-side import. The server holds a one-way code of the meeting ID and the delete time until the user allows those meetings back or deletes the account.
+
+  Details: TC-4414
+
+## 0.14.6
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
+## 0.14.6-beta.0
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
 ## 0.14.5
 
 ### Patch Changes

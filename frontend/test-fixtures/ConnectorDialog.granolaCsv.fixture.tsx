@@ -176,7 +176,7 @@ test("a deleted meeting is skipped until the owner allows deleted meetings back"
   await until(() => textOf(dialog()).includes("skipped because you deleted it."), "Deleted meeting should be skipped");
   expect(f.titles()).toEqual(["Design review"]);
 
-  await click(dialog(), "Allow deleted meetings back");
+  await click(dialog(), "Allow deleted Granola meetings back");
   await click(dialog(), "Allow them back");
   await until(() => f.cleared.includes("granola"), "Allow back should clear Granola's ledger");
   expect(f.cleared).toEqual(["granola"]);

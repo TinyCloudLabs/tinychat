@@ -55,7 +55,7 @@ describe("Fireflies import with a key the server cannot open", () => {
       delegate: keys.delegate,
       grantStore,
       configuredHost: HOST,
-      control: { readLedger: async () => ({ status: "absent" }) },
+      control: { readLedger: async () => ({ status: "absent" }), readDeleted: async () => false },
       fetchOptions: {
         fetchImpl: (async () => {
           firefliesCalls += 1;
