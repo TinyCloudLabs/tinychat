@@ -1,0 +1,9 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.4",
+    "@tinychat/frontend": "0.22.4"
+  },
+  "changesets": [
+    ".changeset/pre/granola-delete-one-meeting.md"
+  ]
+}
