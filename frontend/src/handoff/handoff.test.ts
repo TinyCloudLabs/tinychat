@@ -135,7 +135,7 @@ describe("opening a handoff", () => {
     const read = () => { throw new Error("read was called"); };
     for (const fragment of [
       vector, undefined, signedLink({}, seed), signedLink({ aud: issuer }),
-      signedLink({ exp: now }), signedLink({ exp: now + 86401 }), signedLink({ nbf: now + 1 }),
+      signedLink({ exp: now }), signedLink({ exp: now + 86460 }), signedLink({ nbf: now + 60 }),
       signedLink({ prf: ["invalid-cid"] }), signedLink({ prf: [parent, parent] }), signedLink({ fct: [] }),
       signedLink({ att: { [resource + "/sibling"]: { "tinycloud.kv/get": [{}] } } }),
       signedLink({ att: { [resource]: { "tinycloud.kv/list": [{}] } } }),

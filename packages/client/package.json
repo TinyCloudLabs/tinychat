@@ -20,15 +20,15 @@
   },
   "dependencies": {
     "@tinyboilerplate/core": "workspace:*",
-    "@tinycloud/sdk-core": "3.14.0-beta.20"
+    "@tinycloud/sdk-core": "3.15.0"
   },
   "peerDependencies": {
-    "@openkey/sdk": "0.13.0-beta.3",
-    "@tinycloud/web-sdk": "3.14.0-beta.20"
+    "@openkey/sdk": "0.13.0-beta.5",
+    "@tinycloud/web-sdk": "3.17.0"
   },
   "devDependencies": {
-    "@openkey/sdk": "0.13.0-beta.3",
-    "@tinycloud/web-sdk": "3.14.0-beta.20",
+    "@openkey/sdk": "0.13.0-beta.5",
+    "@tinycloud/web-sdk": "3.17.0",
     "typescript": "^5.7.0"
   }
 }

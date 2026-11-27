@@ -5,16 +5,17 @@ export const EXO_DESKTOP_ORIGIN = "tauri://localhost";
 export const EXO_DESKTOP_WINDOWS_ORIGIN = "http://tauri.localhost";
 
 /**
- * The origin of the phone app's bundled frontend on Android, set in mobile/capacitor.config.ts
- * (`server.hostname` + `androidScheme`). Nothing is ever served at this host (TC-3045).
+ * The origin of the phone app's bundled frontend on Android once #794 ships: it sets `server.hostname` and
+ * `androidScheme` in mobile/capacitor.config.ts, which main does not set yet. Nothing is ever served at this host (TC-3045).
  */
 export const EXO_ANDROID_ORIGIN = "https://app.tinycloud.one";
 
-/** The origin of the phone app's bundled frontend on iOS (`server.hostname` + `iosScheme`). */
+/** The origin of the phone app's bundled frontend on iOS once #794 ships (`server.hostname` and `iosScheme`). */
 export const EXO_IOS_ORIGIN = "tinycloudone://app.tinycloud.one";
 
 /**
- * The phone apps' origins before TC-3045 (Capacitor's defaults), accepted for builds from before the move.
+ * The phone apps' origins in the shipped builds (Capacitor's defaults). The apps run on these until #794 ships, and
+ * builds that predate the move keep using them.
  */
 export const EXO_LEGACY_ANDROID_ORIGIN = "https://localhost";
 export const EXO_LEGACY_IOS_ORIGIN = "capacitor://localhost";
