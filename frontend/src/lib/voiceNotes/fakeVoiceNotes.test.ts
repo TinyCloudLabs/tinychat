@@ -1,12 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { createFakeVoiceNotes } from "./fakeVoiceNotes";
 import type { VoiceNoteRecording } from "./nativeVoiceNotes";
+import { deleteNote, saveNote } from "./recordingNotes";
 
 const code = (value: string) => expect.objectContaining({ code: value });
 const legacy = (id: string): VoiceNoteRecording => ({ id, startedAt: 1, durationMs: 1000, mimeType: "audio/mp4", sizeBytes: 100,
   silencedMs: 0, silencedEvents: 0, noSignalMs: 0 });
 
 describe("VoiceNotes v2 fake public contract", () => {
+  test("a new fake recorder cannot reuse a discarded recording's durable note identity", async () => {
+    const first = createFakeVoiceNotes();
+    const discarded = await first.plugin.start();
+    await first.plugin.stop();
+    await deleteNote(discarded.id, null);
+
+    const second = createFakeVoiceNotes();
+    const fresh = await second.plugin.start();
+    await second.plugin.stop();
+    await expect(saveNote(fresh.id, "New recording", { owner: null })).resolves.toMatchObject({ md: "New recording" });
+    await expect(saveNote(discarded.id, "Late autosave", { owner: null })).rejects.toThrow("This recording was deleted.");
+  });
+
   test("mic-state detail is separate from the contract reason", async () => {
     const { plugin, controls } = createFakeVoiceNotes();
     const events: Array<{ state: string; reason: string | null; detail?: string }> = [];

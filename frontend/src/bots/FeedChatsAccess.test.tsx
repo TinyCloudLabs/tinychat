@@ -75,7 +75,8 @@ test("off by default: the section shows its own words with the bot's name and th
   await click(host, `Let ${BOT} read them`);
   const sheet = host.querySelector('[role="alertdialog"]')!;
   expect(sheet.textContent).toContain(`Let ${BOT} read your feed and chats?`);
-  expect(sheet.textContent).toContain(`Once ${BOT} reads a card or a chat, it can't use the web or your secrets, or send messages to other bots, in this chat until you start a new chat`);
+  expect(sheet.textContent).toContain(`Once ${BOT} reads a card or a chat, web and secret-backed calls stay paused in this chat.`);
+  expect(sheet.textContent).toContain("sends only the exact message and recipients you approve");
   await click(host, "Not now");
   expect(puts).toHaveLength(0);
 });
