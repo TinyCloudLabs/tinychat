@@ -52,6 +52,12 @@ import {
 } from "./strings";
 
 const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+/**
+ * An app kept in the owner's space may talk only to the owner's TinyCloud (the runner's fixed rules). A new window
+ * could carry the owner's data to another site in its address, so its frame opens none. Top navigation is off for
+ * every app. (The frame can still navigate itself away: a known gap, for the runner's design.)
+ */
+export const SANDBOX_FROM_SPACE = "allow-scripts allow-same-origin allow-forms allow-downloads";
 
 interface Ask {
   scopes: ScopeId[];
@@ -287,7 +293,7 @@ function FramedApp({ app, tcw, address, chainId, connect }: FramedAppProps) {
         ref={frameRef}
         src={src}
         title={app.name}
-        sandbox={SANDBOX}
+        sandbox={app.fromSpace ? SANDBOX_FROM_SPACE : SANDBOX}
         allow="clipboard-write"
         referrerPolicy="strict-origin"
         className="min-h-0 w-full flex-1 border-0 bg-background"
