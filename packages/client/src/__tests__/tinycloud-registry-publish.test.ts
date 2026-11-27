@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 
-// TC-3547: the host's registry-publish callbacks reach the SDK config on every TinyCloudWeb this package constructs
+// TC-3547: the host's registry-publish error callback reaches the SDK config on every TinyCloudWeb this package constructs
 // for a sign-in or a restore, and nothing is added when the host gives none.
 let lastConfig: any = null;
 
@@ -30,29 +30,25 @@ mock.module("@tinycloud/web-sdk", () => ({
 const { createTinyCloudWeb, restoreTinyCloudWebSession } = await import("../tinycloud.js?registry-publish");
 
 const registryPublish = {
-  onRegistryPublishConsent: async () => true,
   onRegistryPublishError: () => {},
 };
 
-describe("registry publish callbacks", () => {
-  test("a fresh sign-in instance carries both", () => {
+describe("registry publish error callback", () => {
+  test("a fresh sign-in instance carries it", () => {
     createTinyCloudWeb({} as any, { registryPublish });
-    expect(lastConfig.onRegistryPublishConsent).toBe(registryPublish.onRegistryPublishConsent);
     expect(lastConfig.onRegistryPublishError).toBe(registryPublish.onRegistryPublishError);
     expect(lastConfig.autoBootstrapAccount).toBe(false);
   });
 
-  test("a restored-session instance carries both", async () => {
+  test("a restored-session instance carries it", async () => {
     await restoreTinyCloudWebSession("0xabc", { registryPublish });
-    expect(lastConfig.onRegistryPublishConsent).toBe(registryPublish.onRegistryPublishConsent);
     expect(lastConfig.onRegistryPublishError).toBe(registryPublish.onRegistryPublishError);
   });
 
-  test("without them the config has neither key", async () => {
+  test("without it the config has no such key", async () => {
     createTinyCloudWeb({} as any);
-    expect("onRegistryPublishConsent" in lastConfig).toBe(false);
     expect("onRegistryPublishError" in lastConfig).toBe(false);
     await restoreTinyCloudWebSession("0xabc");
-    expect("onRegistryPublishConsent" in lastConfig).toBe(false);
+    expect("onRegistryPublishError" in lastConfig).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 // Which origins TinyChat's web sign-in works on for an owner without a TinyCloud account record (js-sdk #945/#987).
 // The real web SDK decides from `window.location.origin`: on TinyCloud's own origins such an owner signs in; anywhere
-// else sign-in stops with AccountSetupRequiredError. If one of TinyChat's origins drops off the SDK's first-party
-// list, its case here fails.
+// else sign-in stops with AccountSetupRequiredError, the phone apps' origins included. If one of TinyChat's origins
+// drops off the SDK's first-party list, its case here fails.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { privateKeyToAccount } from "viem/accounts";
 import { createTinyCloudWeb, type EIP1193Provider } from "@tinyboilerplate/client";
@@ -61,8 +61,6 @@ const wallet = {
 for (const [name, origin] of [
   ["tinycloud.chat", "https://tinycloud.chat"],
   ["TinyCloud One on the web", "https://tinycloud.one"],
-  ["the Android app", "https://app.tinycloud.one"],
-  ["the iOS app", "tinycloudone://app.tinycloud.one"],
 ] as const) {
   test(`an owner without a TinyCloud account signs in on ${name} (${origin})`, async () => {
     atOrigin(origin);
@@ -71,12 +69,12 @@ for (const [name, origin] of [
   });
 }
 
-for (const origin of ["https://example.com", "http://localhost:5186", "capacitor://localhost", "https://localhost"]) {
+for (const origin of ["https://example.com", "http://localhost:5186", "capacitor://localhost", "https://localhost", "https://app.tinycloud.one", "tinycloudone://app.tinycloud.one"]) {
   test(`the same owner is sent to set up an account first on ${origin}`, async () => {
     atOrigin(origin);
     await expect(createTinyCloudWeb(wallet, { ...config, manifest }).signIn()).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_REQUIRED",
-      setupUrl: "https://tinycloud.one/",
+      setupUrl: "https://tinycloud.one/?finish-setup=registry",
     });
   });
 }
