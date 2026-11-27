@@ -34,8 +34,9 @@ export interface InviteeSuggestion {
  *     (a `self` invitee), so everyone else is known to be someone else;
  *   - of the other invitees, exactly one did not decline, they accepted, and the calendar gave their name;
  *   - the call window saw nobody (`call` is null): where it did, its own suggestion stands and this one is not made;
- *   - the transcript has exactly one voice that is not the user's: one label other than an own-side label across
- *     all its sentences, and a label a name may be suggested for (`suggestibleLabels`).
+ *   - the note has two sides and exactly one voice on the other one: the user's own side is in the transcript (an
+ *     own-side label), there is one label other than it across all its sentences, and that label is one a name may
+ *     be suggested for (`suggestibleLabels`). A one-sided note's only speaker may be the user.
  */
 export function inviteeSuggestion(link: CalendarLink | null, call: CallParticipants | null,
   sentences: readonly FirefliesSentence[]): InviteeSuggestion | null {
@@ -47,7 +48,7 @@ export function inviteeSuggestion(link: CalendarLink | null, call: CallParticipa
   if (!isPersonName(name)) return null;
   const remote = new Set(sentences.flatMap((sentence) =>
     sentence.speaker_name === null || sentence.speaker_name === "" || OWN_SIDE_LABELS.has(sentence.speaker_name) ? [] : [sentence.speaker_name]));
-  if (remote.size !== 1) return null;
+  if (remote.size !== 1 || !sentences.some((sentence) => sentence.speaker_name !== null && OWN_SIDE_LABELS.has(sentence.speaker_name))) return null;
   const [label] = [...remote] as [string];
   return suggestibleLabels(sentences).has(label) && label !== name ? { label, name } : null;
 }

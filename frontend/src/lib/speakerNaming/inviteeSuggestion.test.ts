@@ -90,6 +90,8 @@ describe("the invitee suggested for a speaker", () => {
     }
     // The only numbered speaker is the microphone side of a two-sided note.
     expect(inviteeSuggestion(link, null, [said("Speaker 1", 0, 60, { channel: 0 })])).toBeNull();
+    // A one-sided note (an upload, a phone memo) with one speaker: that speaker may be the user.
+    expect(inviteeSuggestion(link, null, [said("Speaker 1", 0, 60)])).toBeNull();
     // The user's own entry is never the name, even where it is the only one with a name.
     expect(inviteeSuggestion(linked([ME, { responseStatus: "accepted" }]), null, TWO)).toBeNull();
   });
