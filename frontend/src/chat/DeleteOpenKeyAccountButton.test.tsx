@@ -35,6 +35,7 @@ beforeEach(() => {
       return Response.json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null });
     }
     if (key === `DELETE ${GRANT}`) return Response.json({ state: "none", expiresAt: null });
+    if (key === "DELETE https://api.example/api/connectors/webhooks/deleted") return new Response(null, { status: 204 });
     const next = responses[key]?.[0];
     if (!next) throw new Error(`no answer for ${key} Bearer ${SENTINEL}`);
     return new Response(JSON.stringify(next.body ?? {}), { status: next.status, headers: next.headers });
@@ -73,7 +74,7 @@ test("a stored sign-in is torn down once, then OpenKey opens", async () => {
   responses = { [`GET ${CREDS}`]: [connected], [`DELETE ${CREDS}`]: [{ status: 200, body: { deleted: true, upstreamRevoked: true } }] };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`, "DELETE https://api.example/api/connectors/webhooks/deleted"]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -86,7 +87,7 @@ test("not connected: the full DELETE is sent once, no message, OpenKey opens", a
   };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`, "DELETE https://api.example/api/connectors/webhooks/deleted"]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();
@@ -96,7 +97,7 @@ test("the route dark: no DELETE, no message, OpenKey opens", async () => {
   responses = { [`GET ${CREDS}`]: [{ status: 404, headers: { "X-Route-Unavailable": "connector-credentials" } }] };
   const page = await mount();
   await page.click("Delete OpenKey account");
-  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`]);
+  expect(calls).toEqual(["DELETE https://api.example/api/transcriber/meetings", `DELETE ${GRANT}`, `GET ${CREDS}`, "DELETE https://api.example/api/connectors/webhooks/deleted"]);
   expect(page.opened()).toBe(1);
   expect(page.host.querySelector("[role=alert]")).toBeNull();
   await page.unmount();

@@ -172,6 +172,8 @@ const GMEET_STORE: GmeetSyncStore = {
   getConnection: connectorStore.getConnection,
   putTranscriptBody: connectorStore.putTranscriptBody,
   upsertMeeting: connectorStore.upsertMeeting,
+  isMeetingDeleted: connectorStore.isMeetingDeleted,
+  deleteSourceMeeting: connectorStore.deleteSourceMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
   getDriveCursor: connectorStore.getDriveCursor,

@@ -49,6 +49,9 @@ class FakeStore implements SyncStore {
   rejectAttempt = false;
   /** Optional hook so a test can throw at insertMeeting boundary (per-item error). */
   insertHook: ((m: NormalizedMeeting) => void) | null = null;
+  async isMeetingDeleted(): Promise<StoreResult<boolean>> { return ok(false); }
+  async deleteSourceMeeting(): Promise<StoreResult<void>> { return ok(undefined); }
+
 
   async ensureSchema(_: TinyCloudWeb): Promise<StoreResult<void>> {
     this.schemaEnsured++;

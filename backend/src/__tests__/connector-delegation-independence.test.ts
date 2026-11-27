@@ -52,6 +52,9 @@ class FakeControl implements ConnectorControl {
   async readLedger(_source: string, _address: string): Promise<PurgeLedgerRead> { return { status: "absent" }; }
   async writeLedger(_source: string, _address: string, _ledger: PurgeLedger) {}
   async clearLedger(_source: string, _address: string) {}
+  async markDeleted(): Promise<void> {}
+  async readDeleted(): Promise<boolean> { return false; }
+  async clearDeleted(): Promise<void> {}
   async quarantineLedger(_source: string, _address: string, _raw: unknown) {}
 }
 

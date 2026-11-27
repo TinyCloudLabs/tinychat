@@ -26,6 +26,7 @@ beforeEach(() => {
       if (!next) throw new Error(`network failed Bearer ${TOKEN}`);
       return Response.json(next.body ?? {}, { status: next.status });
     }
+    if (url.endsWith("/api/connectors/webhooks/deleted")) return new Response(null, { status: 204 });
     return Response.json(init?.method === "DELETE" ? { deleted: true, upstreamRevoked: true } : { connected: true });
   }) as typeof fetch;
 });
@@ -54,7 +55,7 @@ async function page(run: (view: { host: HTMLElement; opens: () => number; click:
 test("account deletion purges recordings before credential teardown and OpenKey", async () => {
   await page(async (view) => {
     await view.click("Delete OpenKey account");
-    expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+    expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`, "DELETE https://api.example/api/connectors/webhooks/deleted"]);
     expect(view.opens()).toBe(1);
   });
 });
@@ -75,7 +76,7 @@ for (const [name, response] of [
       if (name === "failed") expect(view.host.textContent).toContain("Some may still be there");
       if (name === "not attributed") expect(view.host.textContent).toContain("still with the notetaker service");
       await view.click("Continue to OpenKey");
-      expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+      expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`, "DELETE https://api.example/api/connectors/webhooks/deleted"]);
       expect(view.opens()).toBe(1);
     });
   });
@@ -86,7 +87,7 @@ test("retry reissues the recordings purge before advancing", async () => {
   await page(async (view) => {
     await view.click("Delete OpenKey account");
     await view.click("Try again");
-    expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${RECORDINGS}`, `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`]);
+    expect(calls).toEqual([`DELETE ${RECORDINGS}`, `DELETE ${RECORDINGS}`, `DELETE ${GRANT}`, `GET ${CREDS}`, `DELETE ${CREDS}`, "DELETE https://api.example/api/connectors/webhooks/deleted"]);
     expect(view.opens()).toBe(1);
   });
 });

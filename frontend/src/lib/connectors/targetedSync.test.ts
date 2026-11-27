@@ -67,6 +67,8 @@ class FakeStore implements TargetedIngestStore {
   failUpsertFor = new Set<string>();
 
   constructor(private readonly log: Log) {}
+  async isMeetingDeleted(): Promise<StoreResult<boolean>> { return ok(false); }
+
 
   async upsertMeeting(
     _tcw: TinyCloudWeb,

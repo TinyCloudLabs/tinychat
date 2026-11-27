@@ -41,6 +41,7 @@ import {
 } from "./firefliesClient";
 import {
   normalizeFirefliesTranscript,
+  isMeetingDeleted as readMeetingDeleted,
   updateSyncState as storeUpdateSyncState,
   countMeetings as storeCountMeetings,
   upsertMeeting as storeUpsertMeeting,
@@ -80,6 +81,7 @@ export interface TargetedSyncClient {
 /** Structural surface of `connectorStore`. `upsertMeeting` writes SQL and the
  *  KV body together and preserves the row id / creation time on an update. */
 export interface TargetedIngestStore {
+  isMeetingDeleted(tcw: TinyCloudWeb, source: "fireflies", sourceId: string): Promise<StoreResult<boolean>>;
   upsertMeeting(
     tcw: TinyCloudWeb,
     meeting: NormalizedMeeting,
@@ -127,6 +129,8 @@ export interface TargetedIngestOutcome {
   stored: number;
   inserted: number;
   updated: number;
+  /** Meetings intentionally skipped because their source id has a deletion marker. */
+  skipped?: number;
   /** Queue identities the backend removed because of THIS run. */
   acknowledged: number;
   /** Already gone when we acknowledged — the lost-response retry, a success. */
@@ -169,6 +173,7 @@ export interface IngestQueuedMeetingsOptions {
 }
 
 const defaultStore: TargetedIngestStore = {
+  isMeetingDeleted: readMeetingDeleted,
   upsertMeeting: storeUpsertMeeting,
   updateSyncState: storeUpdateSyncState,
   countMeetings: storeCountMeetings,
@@ -238,6 +243,7 @@ function emptyOutcome(
     stored: 0,
     inserted: 0,
     updated: 0,
+    skipped: 0,
     acknowledged: 0,
     alreadySettled: 0,
     tombstoned: 0,
@@ -303,6 +309,7 @@ export async function ingestQueuedMeetings(
   const settled: ConnectorAckItem[] = [];
   let stored = 0;
   let inserted = 0;
+  let skipped = 0;
   let updated = 0;
   let terminal: SyncError | null = null;
 
@@ -338,16 +345,27 @@ export async function ingestQueuedMeetings(
         if (await webhooks.checkPurge?.(meeting.sourceId, meeting.startedAt)) {
           blockedByPurge += kinds.length;
         } else {
-          const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
-          if (!upsertRes.ok) {
-            // Only a durable write can be acknowledged. Failures stay queued.
-            recordFailure(kinds, meetingId, "storage", upsertRes.error.message);
-          } else {
-            stored += 1;
-            if (upsertRes.data.inserted) inserted += 1;
-            else updated += 1;
+          const deleted = await store.isMeetingDeleted(tcw, "fireflies", meeting.sourceId);
+          if (!deleted.ok) {
+            recordFailure(kinds, meetingId, "storage", deleted.error.message);
+          } else if (deleted.data) {
+            skipped++;
             for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
-            onProgress?.({ phase: "storing", done: i + 1, total: groups.length });
+          } else {
+            const upsertRes = await store.upsertMeeting(tcw, meeting, sentences);
+            if (!upsertRes.ok && upsertRes.error.code === "SOURCE_MEETING_DELETED") {
+              skipped++;
+              for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
+            } else if (!upsertRes.ok) {
+              // Only a durable write or a deletion marker can be acknowledged.
+              recordFailure(kinds, meetingId, "storage", upsertRes.error.message);
+            } else {
+              stored += 1;
+              if (upsertRes.data.inserted) inserted += 1;
+              else updated += 1;
+              for (const kind of kinds) settled.push({ meetingId, kind, status: "done" });
+              onProgress?.({ phase: "storing", done: i + 1, total: groups.length });
+            }
           }
         }
       } catch (err) {
@@ -395,6 +413,7 @@ export async function ingestQueuedMeetings(
     stored,
     inserted,
     updated,
+    skipped,
     acknowledged: ack.acknowledged,
     alreadySettled: ack.alreadySettled,
     tombstoned: ack.tombstoned + blockedByPurge,

@@ -31,7 +31,7 @@ export const GRANOLA_CSV_STRINGS = {
   stepLabel: (n: number) => `Step ${n}`,
   importing: "Importing your meetings…",
   importingProgress: (done: number, total: number) => `Importing ${done} of ${total} meetings…`,
-  allowBack: "Allow deleted meetings back",
+  allowBack: "Allow deleted Granola meetings back",
   allowBackNote: "After this, Granola syncs and CSV imports can bring back meetings you deleted.",
   allowingBack: "Allowing…",
   allowBackFailed: "Couldn't allow deleted meetings back. Try again.",
@@ -41,9 +41,9 @@ export const GRANOLA_CSV_STRINGS = {
 
 /** Same flow and the same words as the Fireflies "allow deleted meetings back" confirmation, for an import. */
 export const GRANOLA_RESYNC_CONFIRM = {
-  heading: "Allow deleted meetings back?",
+  heading: "Allow deleted Granola meetings back?",
   body:
-    "We keep a list of the meetings you deleted, so an import doesn't bring them back. If you clear it, any of those meetings in a CSV you upload are imported again. This can't be undone.",
+    "We keep a list of the Granola meetings you deleted, so an import doesn’t bring them back. If you clear it, a CSV you upload can bring those meetings back. This can’t be undone.",
   confirmLabel: "Allow them back",
   cancelLabel: "Keep them deleted",
 } as const;

@@ -40,15 +40,11 @@ import type { ConnectorMeetingsClient } from "@/lib/connectors/meetingsApi";
 import type { DisconnectImportGrants } from "@/lib/connectors/connectorLifecycle";
 import type { ConnectorDescriptor } from "@/lib/connectors/types";
 import {
-  HISTORICAL_RESYNC_CONFIRM_COPY,
   backgroundSyncStatus,
-  cancelHistoricalResync,
-  confirmHistoricalResync,
   disableBackgroundSync,
   dismissReveal,
   enableBackgroundSync,
   queueNotices,
-  requestHistoricalResync,
   rotateCredentials,
   type BackgroundSyncState,
   type BackgroundSyncStatus,
@@ -113,9 +109,6 @@ export function BackgroundSyncSection(props: BackgroundSyncSectionProps) {
       onRetry={sync.retry}
       onDismissReveal={() => emit(dismissReveal)}
       onCopy={copyToClipboard}
-      onRequestHistoricalResync={() => emit(requestHistoricalResync)}
-      onCancelHistoricalResync={() => emit(cancelHistoricalResync)}
-      onConfirmHistoricalResync={() => void confirmHistoricalResync(deps, emit)}
     />
   );
 }
@@ -147,11 +140,6 @@ export interface BackgroundSyncViewProps {
   onRetry: () => void;
   onDismissReveal: () => void;
   onCopy: (value: string, label: string) => void;
-  /** Arms the confirmation. Deliberately three separate props: asking,
-   *  backing out, and going through with it are three distinct user acts. */
-  onRequestHistoricalResync: () => void;
-  onCancelHistoricalResync: () => void;
-  onConfirmHistoricalResync: () => void;
 }
 
 export function BackgroundSyncView({
@@ -166,9 +154,6 @@ export function BackgroundSyncView({
   onRetry,
   onDismissReveal,
   onCopy,
-  onRequestHistoricalResync,
-  onCancelHistoricalResync,
-  onConfirmHistoricalResync,
 }: BackgroundSyncViewProps) {
   // A route-disabled 404 means the feature is not deployed here. Rendering a
   // setup control that cannot work is worse than rendering nothing.
@@ -326,13 +311,6 @@ export function BackgroundSyncView({
               <span>Turn off background notifications</span>
             </Button>
           </div>
-          <HistoricalResyncPanel
-            armed={state.resyncConfirming}
-            busy={busy}
-            onRequest={onRequestHistoricalResync}
-            onCancel={onCancelHistoricalResync}
-            onConfirm={onConfirmHistoricalResync}
-          />
         </>
       )}
     </div>
@@ -387,67 +365,6 @@ const RevealPanel: FC<{
   </div>
 );
 
-/**
- * The one control that can let deleted meetings come back.
- *
- * It is NOT part of reconnecting, enabling or syncing — none of those may clear
- * the purge record, and none of them renders this. Asking shows the full
- * consequence; only the second, explicit press calls `DELETE /purged`.
- */
-const HistoricalResyncPanel: FC<{
-  armed: boolean;
-  busy: BackgroundSyncState["busy"];
-  onRequest: () => void;
-  onCancel: () => void;
-  onConfirm: () => void;
-}> = ({ armed, busy, onRequest, onCancel, onConfirm }) => (
-  <div className="flex flex-col gap-2 border-t border-border pt-2">
-    <p className="text-xs font-medium text-foreground">
-      {HISTORICAL_RESYNC_CONFIRM_COPY.heading}
-    </p>
-    {!armed && (
-      <div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onRequest}
-          disabled={busy !== null}
-        >
-          Allow historical re-sync
-        </Button>
-      </div>
-    )}
-    {armed && (
-      <>
-        <p className="text-xs text-muted-foreground">
-          {HISTORICAL_RESYNC_CONFIRM_COPY.body}
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={onConfirm}
-            disabled={busy !== null}
-            className="gap-1.5"
-          >
-            {busy === "clearing-ledger" && (
-              <Loader2Icon className="size-3.5 animate-spin" aria-hidden />
-            )}
-            <span>{HISTORICAL_RESYNC_CONFIRM_COPY.confirmLabel}</span>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onCancel}
-            disabled={busy !== null}
-          >
-            {HISTORICAL_RESYNC_CONFIRM_COPY.cancelLabel}
-          </Button>
-        </div>
-      </>
-    )}
-  </div>
-);
 
 const RevealField: FC<{
   label: string;

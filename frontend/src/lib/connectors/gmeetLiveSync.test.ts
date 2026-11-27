@@ -27,6 +27,8 @@ function space(notes: number) {
   const rows = new Set<string>();
   let checkpoint: GmeetDriveProgress | null = null;
   const store = {
+    async isMeetingDeleted() { return ok(false); },
+    async deleteSourceMeeting() { return ok(undefined); },
     async getConnection() { return ok({ connectorId: "google-meet" as const, status: "connected" as const, lastSyncedAt: null, lastSyncStatus: null, lastSyncError: null, itemCount: 0 }); },
     async putTranscriptBody() { return ok(undefined); },
     async upsertMeeting(_: TinyCloudWeb, meeting: NormalizedMeeting) {

@@ -76,6 +76,7 @@ export const REQUEST_LOG_ROUTE_TEMPLATES: readonly string[] = [
   "/api/connectors/webhooks/:source/:token",
   "/api/connectors/webhooks/ack",
   "/api/connectors/webhooks/config",
+  "/api/connectors/webhooks/deleted",
   "/api/connectors/webhooks/drain",
   "/api/connectors/webhooks/pending",
   "/api/connectors/webhooks/purge-check",
