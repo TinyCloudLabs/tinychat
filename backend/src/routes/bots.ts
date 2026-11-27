@@ -18,7 +18,7 @@ export interface BotsConfig {
   /** The environment of the service at serviceUrl, signed into every call. Default `private`. */
   environment?: Environment;
   accountAllowed: (address: string) => boolean;
-  /** Overall bound on one POST turn (BOTS_POST_TIMEOUT_MS, default 120000). */
+  /** Overall proxy deadline, at least the configured bot turn budget plus transport/ startup margin. */
   postTimeoutMs: number;
   fetchImpl?: typeof fetch;
   onTurnFinished?: () => void;
@@ -30,6 +30,8 @@ export interface BotsConfig {
 
 // Legacy history may restore a sandbox before OMP can answer. Keep this GET bounded independently of turns.
 export const BOTS_HISTORY_GET_TIMEOUT_MS = 300_000;
+export const BOTS_DEFAULT_TURN_TIMEOUT_MS = 300_000;
+export const BOTS_POST_TIMEOUT_MARGIN_MS = 60_000;
 const MAX_TEXT = 8000;
 const UNAVAILABLE = { code: "bot_unavailable", message: `${MAIN_BOT_NAME} isn't available. Try again later.` };
 
@@ -308,10 +310,16 @@ export function botsFromEnv(env: Record<string, string | undefined>): BotsConfig
     return undefined;
   }
   const postTimeoutMs = Number(env.BOTS_POST_TIMEOUT_MS ?? "");
+  const turnTimeoutMs = Number(env.BOTS_TURN_TIMEOUT_MS ?? "");
+  const validTimeout = (ms: number) => Number.isSafeInteger(ms) && ms > 0 && ms <= 2_147_483_647 - BOTS_POST_TIMEOUT_MARGIN_MS;
+  const minimumPostTimeout = (validTimeout(turnTimeoutMs) ? turnTimeoutMs : BOTS_DEFAULT_TURN_TIMEOUT_MS) + BOTS_POST_TIMEOUT_MARGIN_MS;
+  if (validTimeout(postTimeoutMs) && postTimeoutMs < minimumPostTimeout) {
+    console.warn("[startup] BOTS_POST_TIMEOUT_MS was shorter than the bot turn budget; extending it to include the turn and transport margin.");
+  }
   return {
     serviceUrl, serviceSecret,
     ...(connectHost ? { fetchImpl: botsConnectFetch(serviceUrl, connectHost) } : {}),
-    postTimeoutMs: Number.isInteger(postTimeoutMs) && postTimeoutMs > 0 ? postTimeoutMs : 120_000,
+    postTimeoutMs: Math.max(validTimeout(postTimeoutMs) ? postTimeoutMs : 0, minimumPostTimeout),
     accountAllowed: address => accounts.has("*") || accounts.has(address.toLowerCase()) };
 }
 
@@ -462,7 +470,7 @@ export function createBotsRouter(opts: {
   const sendAsks = async (res: Response, upstream: Promise<globalThis.Response>, rebuild: (payload: unknown) => unknown | Promise<unknown>, decided = false): Promise<void> => {
     try {
       const response = await upstream;
-      // A Send for a chat that holds the owner's private data is refused with `held`; any other 409 is a decided request.
+      // Older supervisors can still refuse an approved Send as held; keep that rolling-upgrade response readable.
       const held = decided && response.status === 409 && (await response.clone().json().catch(() => null) as { error?: unknown } | null)?.error === "held";
       const refused = response.status === 404 ? { status: 404, error: "not_found" } : held ? { status: 409, error: "held" }
         : decided && response.status === 409 ? { status: 409, error: "not_pending" }
@@ -656,6 +664,7 @@ export function createBotsRouter(opts: {
     const abort = () => controller.abort();
     res.on("close", abort);
     let timedOut = false;
+    let upstreamAccepted = false;
     const timer = setTimeout(() => { timedOut = true; abort(); }, config!.postTimeoutMs);
 
     const open = () => {
@@ -685,6 +694,11 @@ export function createBotsRouter(opts: {
         return;
       }
       if (!upstream.ok || !upstream.body) throw new Error("upstream");
+      upstreamAccepted = true;
+      if (controller.signal.aborted) {
+        void upstream.body.cancel().catch(() => {});
+        throw new Error("aborted");
+      }
       open();
       const reader = upstream.body.getReader();
       // Release a pending read even if the upstream body ignores the abort signal.
@@ -707,7 +721,10 @@ export function createBotsRouter(opts: {
     } catch {
       open();
       if ((timedOut || !controller.signal.aborted) && !res.writableEnded) {
-        res.write(`event: error\ndata: ${JSON.stringify(key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE)}\n\n`);
+        const error = upstreamAccepted || timedOut
+          ? { code: "reply_interrupted", message: "The connection ended before a result arrived. Check the conversation before sending again." }
+          : key === MAIN_BOT_KEY ? UNAVAILABLE : BOT_UNAVAILABLE;
+        res.write(`event: error\ndata: ${JSON.stringify(error)}\n\n`);
       }
     } finally {
       clearTimeout(timer);

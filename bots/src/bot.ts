@@ -23,7 +23,7 @@ import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionRe
 /** Where a message the app sends Main comes from: a decided question or secret request, or a decided proposal. */
 export type AppSource = { app: AppOrigin["app"] | ActionReply["decision"]; secret?: SecretLine };
 
-export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
+export type ErrorCode = "bot_unavailable" | "model_unavailable" | "turn_timeout" | "busy" | "at_capacity" | "invalid";
 
 export const MAX_TEXT = 8000;
 
@@ -31,6 +31,7 @@ export const MAX_TEXT = 8000;
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   bot_unavailable: `${MAIN_BOT_NAME} isn't available. Try again later.`,
   model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
+  turn_timeout: `${MAIN_BOT_NAME} reached the time limit for this task.`,
   busy: `${MAIN_BOT_NAME} is still working on your last message. Send this one when it replies.`,
   at_capacity: `${MAIN_BOT_NAME} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.`,
   invalid: "Messages can be up to 8,000 characters.",
@@ -141,7 +142,7 @@ export const HEARTBEAT_MS = 15_000;
 export interface BotOptions {
   /** Idle time after session_settled before the sandbox stops. */
   idleMs: number;
-  /** A turn with no prompt_result by then ends with bot_unavailable and its sandbox is killed. */
+  /** A turn with no prompt_result by then ends with turn_timeout and its sandbox is killed. */
   turnTimeoutMs: number;
   /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
   maxTurnBytes: number;
@@ -715,8 +716,8 @@ export class Bot {
    */
   async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
     await this.#deleting;
-    // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
-    if (await this.holdsOwnerData()) return { ok: false, error: "held" };
+    // Approval names the exact stored recipients and text. Direct model-initiated
+    // messaging still checks holdsOwnerData(); this owner-approved path does not.
     const store = new ActionStore(this.layout);
     const approved = store.approve(id, binding, this.layout.ownerId);
     if (!approved.ok) return approved;
@@ -1033,7 +1034,7 @@ export class Bot {
     const deadline = setTimeout(() => {
       if (finished) return;
       log("turn_timeout", this.layout.botId);
-      finish({ code: "bot_unavailable" });
+      finish({ code: "turn_timeout" });
       void this.#stop(sandbox);
     }, this.#options.turnTimeoutMs);
     const off = sandbox.onFrame(frame => {

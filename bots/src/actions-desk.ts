@@ -18,16 +18,16 @@ import { toolText } from "./web";
 export const PROPOSE_TOOL = {
   name: "propose_action",
   description:
-    "Propose sending one message to two or more of the owner's other bots. The owner sees a card with the recipients and your message exactly as written, " +
+    "Propose sending one message to one or more of the owner's other bots. The owner sees a card with the recipients and your message exactly as written, " +
     "and taps Send or Don't send; TinyCloud sends it once. It returns an id and the state \"pending\" at once; do not wait. " +
-    "The outcome arrives later as a message from the app. To message one bot, use message_bot.",
+    "The outcome arrives later as a message from the app. After reading private data, use this tool even for one recipient; sending still requires the owner's approval.",
   inputSchema: {
     type: "object",
     properties: {
-      kind: { type: "string", enum: ["message_bots"], description: "What to do. \"message_bots\": send one message to several bots." },
+      kind: { type: "string", enum: ["message_bots"], description: "What to do. \"message_bots\": send one message to the named bots." },
       targets: {
         type: "array", minItems: MIN_TARGETS, maxItems: MAX_TARGETS, uniqueItems: true, items: { type: "string" },
-        description: "Keys of the bots to message: two or more, from the bots you can message.",
+        description: "Keys of one or more bots, from the bots you can message.",
       },
       text: { type: "string", minLength: 1, maxLength: MAX_ACTION_TEXT, description: "The message, exactly as each bot should get it." },
     },
@@ -110,11 +110,7 @@ export class ActionDesk {
   readonly #ledgers = new Map<string, Ledger>();
   readonly #issued = new Map<string, IssuedAction>();
   readonly #store: ActionLedgerStore | undefined;
-  readonly #held: (botId: string) => boolean;
-
-  /** `held`: whether the bot's chat holds the owner's private data, which sends nothing to other bots (meeting-reads.ts). */
-  constructor(now: () => number, ownerOf: (botId: string) => string, outside: (botId: string) => boolean, store?: ActionLedgerStore, held: (botId: string) => boolean = () => false) {
-    this.#held = held;
+  constructor(now: () => number, ownerOf: (botId: string) => string, outside: (botId: string) => boolean, store?: ActionLedgerStore) {
     this.#now = now;
     this.#ownerOf = ownerOf;
     this.#outside = outside;
@@ -174,11 +170,8 @@ export class ActionDesk {
    * it lapses. Only the supervisor's control socket reaches this. A spend that cannot be saved is refused.
    */
   spend(botId: string, id: string, binding: string): boolean {
-    // An approval issued before a meeting read cannot be sent after it; it is left unspent.
-    if (this.#held(botId)) {
-      console.log(JSON.stringify({ gateway: "actions", bot: botId.slice(0, 12), outcome: "spend_held" }));
-      return false;
-    }
+    // The supervisor reaches this only after an owner approves the exact payload.
+    // A private read does not revoke that approval or clear the conversation's mark.
     const entry = this.#issued.get(id);
     const ok = entry !== undefined && entry.bot === botId && entry.binding === binding && !entry.spent && this.#now() < entry.expiresAt + SPEND_GRACE_MS;
     if (ok) {
@@ -199,7 +192,6 @@ export class ActionDesk {
       log(outcome);
       return toolText(ACTION_ERRORS[error], true);
     };
-    if (this.#held(botId)) return refuse("held", "held");
     const ledger = this.#ledger(botId);
     const extra = Object.keys(args).some(key => key !== "kind" && key !== "targets" && key !== "text");
     const targets = checkedTargets(args.targets);

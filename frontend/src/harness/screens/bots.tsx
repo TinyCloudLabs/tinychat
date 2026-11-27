@@ -12,7 +12,7 @@ import { useBots } from "@/bots/useBots";
 import { BotsRouteMissing, type BotsApi, type SecretRequest } from "@/bots/botsApi";
 import { HomeAskBox } from "@/bots/HomeAskBox";
 import { MainChat } from "@/bots/MainChat";
-import { readSettings, type ReadAreaApi } from "@/bots/trustbotReadGrant";
+import { readSettings, type ReadAreaApi, type ReadSettings } from "@/bots/trustbotReadGrant";
 import { SecretCards } from "@/bots/SecretCard";
 import type { Asks } from "@/bots/useAsks";
 import { setSecretsAvailableForTests } from "@/lib/openkeyNative";
@@ -177,6 +177,70 @@ function StandingReadsPreview() {
   </>} />;
 }
 
+// Main's chat for an owner with every setting offered: Web access, Feed and chats on with its chats listed, questions
+// and a new chat. `bots-main-settings` opens the sheet's settings view, as an owner does from the header.
+const READS_ON: ReadSettings = {
+  serviceDid: "did:key:harness-trustbot", expiresAt: FROZEN_NOW + 6 * 86_400_000, grantCid: "harness-grant",
+  areas: { meetings: "off", feed_chats: "on" },
+};
+const CHATS = ["Reading group names", "Friday offsite plan", "Kitchen quotes", "Birthday gift ideas", "Weekly team notes", null];
+const readsOn: ReadAreaApi = {
+  ...readOnly,
+  readSettings: async () => READS_ON,
+  chatReadAccess: {
+    listChats: async () => CHATS.map((title, index) => ({ id: `chat-${index}`, title })),
+    readDeniedChatIds: async () => new Set(["chat-3"]),
+    async setChatDenied() { throw new Error("harness: read-only settings"); },
+  },
+};
+
+function MainAccess({ settings = false }: { settings?: boolean }) {
+  // The sheet's header appears after this effect runs: tap once it is there.
+  useEffect(() => {
+    if (!settings) return;
+    const timer = window.setInterval(() => {
+      const button = document.querySelector<HTMLButtonElement>(`[data-bots-main-chat] button[aria-label="${BOTS_STRINGS.mainSettings}"]`);
+      if (button) { button.click(); window.clearInterval(timer); }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [settings]);
+  return <Home ask={<>
+    <AskBox working onSend={() => {}} onOpenMain={() => {}} />
+    <MainChat open onOpenChange={() => {}} state={MID_REPLY} onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}}
+      webAccess={ENABLED} meetings={readsOn} asks={fixtureAsks([])} newChat={{ start: () => new Promise(() => {}) }} />
+  </>} />;
+}
+
+// Main's chat after a reply whose turn tried the owner's meetings while that access is off: the card under the reply.
+// `bots-main-ask-access-confirm` taps its button, as an owner does, to show the confirm step.
+const ASKED_MEETINGS: MainChatState = {
+  history: "loaded",
+  lines: [
+    { id: "a1", role: "user", text: "What did we decide in Monday's planning meeting?" },
+    { id: "a2", role: "bot", text: "I can't read your meetings yet.", areas: ["meetings"] },
+  ],
+  turn: null,
+};
+const readsOff: ReadAreaApi = { ...readsOn, readSettings: async () => ({ ...READS_ON, expiresAt: null, grantCid: null, areas: { meetings: "off", feed_chats: "off" } }) };
+
+function MainAskAccess({ confirm = false }: { confirm?: boolean }) {
+  const [state, setState] = useState(ASKED_MEETINGS);
+  useEffect(() => {
+    if (!confirm) return;
+    const timer = window.setInterval(() => {
+      const button = document.querySelector<HTMLButtonElement>("[data-bots-access-card=meetings] button");
+      if (button) { button.click(); window.clearInterval(timer); }
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [confirm]);
+  return <Home ask={<>
+    <AskBox working={false} onSend={() => {}} onOpenMain={() => {}} />
+    <MainChat open onOpenChange={() => {}} state={state} onSend={() => {}} onRetry={() => {}} onRetryHistory={() => {}}
+      webAccess={ENABLED} meetings={readsOff} asks={fixtureAsks([])} newChat={{ start: () => new Promise(() => {}) }}
+      onNotNow={() => setState((current) => ({ ...current, lines: current.lines.map(({ areas: _, ...line }) => line) }))} />
+  </>} />;
+}
+
 function CreateBotPreview({ cap = null }: { cap?: "flat3" | "table" | null }) {
   const [open, setOpen] = useState(true);
   const [created, setCreated] = useState<RosterBot | null>(null);
@@ -306,6 +370,12 @@ export const botsScreens: HarnessScreen[] = [
       />
     ),
   },
+  { ...BASE, id: "bots-main-access", readyWhen: "[data-bots-main-chat]", viewports: ["phone", "desktop"], render: () => <MainAccess /> },
+  { ...BASE, id: "bots-main-settings", readyWhen: '[data-bots-main-chat]:has(button[aria-label="Back to chat"]) [data-bots-read-area=feed_chats] li', viewports: ["phone", "desktop"],
+    render: () => <MainAccess settings /> },
+  { ...BASE, id: "bots-main-ask-access", readyWhen: "[data-bots-access-card=meetings] button", viewports: ["phone", "desktop"], render: () => <MainAskAccess /> },
+  { ...BASE, id: "bots-main-ask-access-confirm", readyWhen: "[data-bots-access-card=meetings] [role=alertdialog]", viewports: ["phone", "desktop"],
+    render: () => <MainAskAccess confirm /> },
   {
     ...BASE,
     id: "bots-main-waiting",

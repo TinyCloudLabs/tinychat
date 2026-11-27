@@ -1,7 +1,7 @@
-// TC-3792: a conversation that read the owner's meetings sends nothing to other bots, and propose_action's sink is the
-// same as message_bot's: the proposal is refused, and a proposal made before the read cannot be spent after it.
+// A private read keeps unapproved exports held, but the owner can approve an
+// immutable message to selected bots. Only the supervisor can spend the approval.
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { ACTION_ERRORS } from "../actions";
+import { ACTION_ERRORS, actionBinding } from "../actions";
 import { utcDay } from "../asks";
 import { type GatewayConfig, PINNED_UPSTREAM } from "../config";
 import { type BudgetSnapshot, type BudgetStore, Gateway } from "../gateway";
@@ -49,7 +49,8 @@ async function call(gateway: Gateway, name: string, args: Record<string, unknown
     method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call", params: { name, arguments: args } }),
   }));
-  const reply = (await response.json()) as { result?: { content?: Array<{ text: string }>; isError?: boolean } };
+  const reply = (await response.json()) as { error?: { code: number }; result?: { content?: Array<{ text: string }>; isError?: boolean } };
+  if (reply.error) return { text: String(reply.error.code), isError: true };
   return { text: reply.result?.content?.[0]?.text ?? "", isError: reply.result?.isError === true };
 }
 const read = (gateway: Gateway) => call(gateway, "tinycloud_read_meeting", { focus: "summary" });
@@ -58,20 +59,51 @@ let spy: { mockRestore(): void };
 beforeEach(() => { spy = spyOn(console, "log").mockImplementation(() => {}); });
 afterEach(() => spy.mockRestore());
 
-test("propose_action is refused in a chat that read a meeting, and nothing is queued", async () => {
+test("a chat that read a meeting can propose to one recipient without lifting its hold", async () => {
   const gateway = setup();
   await read(gateway);
-  expect(await call(gateway, "propose_action", PROPOSAL)).toEqual({ text: ACTION_ERRORS.held, isError: true });
-  expect(gateway.drainActions(BOT)).toEqual([]);
+  const payload = { ...PROPOSAL, targets: [FIRST] };
+  expect((await call(gateway, "propose_action", payload)).isError).toBe(false);
+  const [proposal] = gateway.drainActions(BOT);
+  expect(proposal!.targets).toEqual([FIRST]);
+  expect(proposal!.text).toBe(payload.text);
+  expect(gateway.readsHeld(BOT)).toBe(true);
+  // A model-facing tool call cannot spend the approval.
+  const denied = await call(gateway, "spend_action", { id: proposal!.id, binding: proposal!.binding });
+  expect(denied).toEqual({ text: "-32602", isError: true });
+  expect(gateway.spendAction(BOT, proposal!.id, proposal!.binding)).toBe(true);
+  expect(gateway.spendAction(BOT, proposal!.id, proposal!.binding)).toBe(false);
+  expect(gateway.readsHeld(BOT)).toBe(true);
 });
 
-test("a proposal made before a meeting read cannot be spent after it", async () => {
+test("the supervisor can spend an exact approval issued before a private read, once", async () => {
   const gateway = setup();
   expect((await call(gateway, "propose_action", PROPOSAL)).isError).toBe(false);
   const [proposal] = gateway.drainActions(BOT);
   expect(proposal).toBeDefined();
   await read(gateway);
+  expect(gateway.spendAction(BOT, proposal!.id, proposal!.binding)).toBe(true);
   expect(gateway.spendAction(BOT, proposal!.id, proposal!.binding)).toBe(false);
+  expect(gateway.readsHeld(BOT)).toBe(true);
+});
+
+test("held approvals reject another bot, changed recipients and changed text without spending the original", async () => {
+  const gateway = setup();
+  await read(gateway);
+  await call(gateway, "propose_action", PROPOSAL);
+  const [proposal] = gateway.drainActions(BOT);
+  expect(gateway.spendAction(botIdFor(OWNER, FIRST), proposal!.id, proposal!.binding)).toBe(false);
+  for (const changed of [{ ...proposal!, targets: [FIRST] }, { ...proposal!, text: "changed" }]) {
+    expect(gateway.spendAction(BOT, proposal!.id, actionBinding(BOT, BOT, changed))).toBe(false);
+  }
+  expect(gateway.spendAction(BOT, proposal!.id, proposal!.binding)).toBe(true);
+});
+
+test("private data does not authorize a recipient absent from the owner's roster", async () => {
+  const gateway = setup();
+  await read(gateway);
+  expect(await call(gateway, "propose_action", { ...PROPOSAL, targets: ["d".repeat(32)] })).toEqual({ text: ACTION_ERRORS.invalid, isError: true });
+  expect(gateway.drainActions(BOT)).toEqual([]);
 });
 
 test("in a fresh chat a proposal is accepted and its approval is spent once", async () => {

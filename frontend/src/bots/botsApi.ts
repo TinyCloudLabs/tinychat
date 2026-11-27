@@ -142,7 +142,7 @@ export interface AskRequest {
   resolvedAt?: string;
 }
 
-/** One message Main proposed sending to two or more of the owner's other bots. The card is made from these fields. */
+/** One message Main proposed sending to one or more of the owner's other bots. The card is made from these fields. */
 export interface ActionRequest {
   id: string;
   kind: "action";
@@ -197,6 +197,8 @@ export interface BotsApi {
 const STREAM_ERROR_CODES: Record<string, BotsErrorCode> = {
   bot_unavailable: "bot_unavailable",
   model_unavailable: "model_unavailable",
+  reply_interrupted: "reply_interrupted",
+  turn_timeout: "turn_timeout",
   busy: "busy",
   at_capacity: "at_capacity",
   invalid: "invalid",

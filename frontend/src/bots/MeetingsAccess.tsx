@@ -4,6 +4,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ASK_STRINGS } from "./askStrings";
 import { BotsRouteMissing } from "./botsApi";
 import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS, TELEGRAM_ACCESS_STRINGS } from "./botsStrings";
 import { ChatReadAccess } from "./ChatReadAccess";
@@ -38,21 +39,33 @@ function Confirm({ copy: COPY, onConfirm, onCancel, busy }: { copy: AccessCopy; 
   );
 }
 
-export function MeetingsAccess({ api, onSettings }: { api: MeetingsAccessApi; onSettings?: (settings: ReadSettings) => void }) {
-  return <ReadAreaAccess api={api} onSettings={onSettings} area="meetings" copy={MEETINGS_ACCESS_STRINGS} />;
+/**
+ * `onChanged` hears of a change the owner made here, with the stored settings. In a card in the conversation the section
+ * offers `onNotNow` beside its button and leaves out the list of chats (`chatList={false}`).
+ */
+interface AccessProps {
+  api: MeetingsAccessApi;
+  onSettings?: (settings: ReadSettings) => void;
+  onChanged?: (settings: ReadSettings) => void;
+  onNotNow?: () => void;
+  chatList?: boolean;
 }
 
-export function FeedChatsAccess({ api, onSettings }: { api: MeetingsAccessApi; onSettings?: (settings: ReadSettings) => void }) {
-  return <ReadAreaAccess api={api} onSettings={onSettings} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
+export function MeetingsAccess(props: AccessProps) {
+  return <ReadAreaAccess {...props} area="meetings" copy={MEETINGS_ACCESS_STRINGS} />;
 }
 
-export function TelegramAccess({ api }: { api: MeetingsAccessApi }) {
-  return <ReadAreaAccess api={api} area="telegram" copy={TELEGRAM_ACCESS_STRINGS} />;
+export function FeedChatsAccess(props: AccessProps) {
+  return <ReadAreaAccess {...props} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
+}
+
+export function TelegramAccess(props: Omit<AccessProps, "onSettings">) {
+  return <ReadAreaAccess {...props} area="telegram" copy={TELEGRAM_ACCESS_STRINGS} />;
 }
 
 /** Renders nothing while loading and when the service answers 404 (the feature is not on for this account). */
-function ReadAreaAccess({ api, area: AREA, copy: COPY, onSettings }: {
-  api: MeetingsAccessApi; area: ReadArea; copy: AccessCopy; onSettings?: (settings: ReadSettings) => void;
+function ReadAreaAccess({ api, area: AREA, copy: COPY, onSettings, onChanged, onNotNow, chatList = true }: AccessProps & {
+  area: ReadArea; copy: AccessCopy;
 }) {
   const id = useId();
   const [saved, setSaved] = useState<ReadSettings | null>(null);
@@ -103,6 +116,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY, onSettings }: {
       if (!alive.current) return;
       setSaved(stored);
       onSettings?.(stored);
+      onChanged?.(stored);
       setConfirming(false);
     } catch {
       if (!alive.current) return;
@@ -127,16 +141,17 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY, onSettings }: {
       {confirming ? (
         <Confirm copy={COPY} busy={saving} onConfirm={() => void change(true)} onCancel={() => setConfirming(false)} />
       ) : (
-        <div>
+        <div className="flex flex-wrap gap-2">
           {state === "on" ? (
             <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => void change(false)}>{COPY.turnOff}</Button>
           ) : (
             <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => { setFailed(false); setConfirming(true); }}>{COPY.allow}</Button>
           )}
+          {onNotNow ? <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={onNotNow}>{ASK_STRINGS.notNow}</Button> : null}
         </div>
       )}
       {failed ? <p role="alert" className="text-callout text-muted-foreground">{COPY.failed}</p> : null}
-      {AREA === "feed_chats" && loadedApi === api && api.chatReadAccess ? <ChatReadAccess api={api.chatReadAccess} /> : null}
+      {AREA === "feed_chats" && chatList && loadedApi === api && api.chatReadAccess ? <ChatReadAccess api={api.chatReadAccess} /> : null}
     </section>
   );
 }
