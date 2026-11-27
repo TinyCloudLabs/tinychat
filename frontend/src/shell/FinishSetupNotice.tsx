@@ -10,6 +10,7 @@ import { hasFinishSetupRegistryIntent, publishRegistryRecord, runFinishSetupInte
 import { registryNudgedStore, type NudgedStore } from "@/lib/registryConsent/nudged";
 import { canOpenRegistrySetupLink } from "@/lib/registryConsent/setupLink";
 import { appPlatform, type AppPlatform } from "@/lib/platform";
+import { anotherModalOpen } from "./modalOpen";
 
 /**
  * What a finish-setup link says before anything is signed (TC-3547). A link opened without the Home card shows this
@@ -49,11 +50,12 @@ export function FinishSetupNotice({ open, onPublish, onCancel }: { open: boolean
  * Once per owner per device (nudged.ts), a signed-in web owner the registry does not know, and who has not published from
  * this device (the Home card's gate), sees the same notice without a link. The flag is written when the notice shows, so
  * Cancel and a reload do not ask again. A finish-setup link counts as that one ask: it writes the flag too, so the notice
- * never opens twice. Phones and the desktop app keep only the card.
+ * never opens twice. Phones and the desktop app keep only the card. The prompt waits for every other modal to close (the
+ * App's own dialogs through `blocked`, any other dialog through modalOpen.ts) and is flagged only when it opens.
  */
 export function FinishSetupLinkHost({
   tcw, ready, searchKey, env = { location: window.location, history: window.history }, dismissed = registryDismissedStore,
-  nudged = registryNudgedStore, unregistered = readRegistryUnregistered, platform = appPlatform(),
+  nudged = registryNudgedStore, unregistered = readRegistryUnregistered, platform = appPlatform(), blocked = false,
 }: {
   tcw: RegistryPublishClient | null;
   ready: boolean;
@@ -64,8 +66,12 @@ export function FinishSetupLinkHost({
   /** The registry's verdict for the owner: true only for "unregistered" and not offline. */
   unregistered?: (tcw: RegistryPublishClient) => Promise<boolean>;
   platform?: AppPlatform;
+  /** True while one of the App's own dialogs is open (modalOpen.ts appDialogOpen): the one-time prompt waits. */
+  blocked?: boolean;
 }) {
   const [noticeFor, setNoticeFor] = useState<RegistryPublishClient | null>(null);
+  // The client whose one-time prompt is due and waiting for no other modal to be open.
+  const [due, setDue] = useState<RegistryPublishClient | null>(null);
   // A new client, no client, or an ended sign-in drops the notice.
   useEffect(() => () => setNoticeFor(null), [ready, tcw]);
   useEffect(() => {
@@ -83,13 +89,30 @@ export function FinishSetupLinkHost({
     if (!ready || !tcw || !subject || platform !== "web" || nudged.read(subject)) return;
     let alive = true;
     void finishSetupBannerVisible(tcw, unregistered, () => canOpenRegistrySetupLink(platform), dismissed).then((visible) => {
-      if (!alive || !visible || nudged.read(subject)) return;
-      nudged.write(subject);
-      setNoticeFor(tcw);
+      if (alive && visible) setDue(tcw);
     }, () => {});
-    return () => { alive = false; };
+    return () => { alive = false; setDue(null); };
     // The verdict lookup and the stores are the page's own; only the client and sign-in state decide a run.
   }, [ready, tcw]);
+  // Show the due prompt at the first moment no other modal is open: the App's own dialogs (`blocked`) or any dialog in the
+  // page (anotherModalOpen). The flag is written here, when the notice actually opens, never while it waits; a reload
+  // before then asks again. The page is watched only while a prompt waits.
+  useEffect(() => {
+    const subject = due?.did;
+    if (!due || !subject || blocked) return;
+    const showIfClear = () => {
+      if (anotherModalOpen()) return false;
+      setDue(null);
+      if (nudged.read(subject) || dismissed.read(subject)) return true;
+      nudged.write(subject);
+      setNoticeFor(due);
+      return true;
+    };
+    if (showIfClear()) return;
+    const watch = new MutationObserver(() => { if (showIfClear()) watch.disconnect(); });
+    watch.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state", "role"] });
+    return () => watch.disconnect();
+  }, [due, blocked]);
   // An answer that arrives after the client changed names the old client, so it never shows for the new one.
   const open = ready && tcw !== null && noticeFor === tcw;
   return (
