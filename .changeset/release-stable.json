@@ -1,9 +1,0 @@
-{
-  "versions": {
-    "exo-desktop": "0.22.11",
-    "@tinychat/frontend": "0.22.11"
-  },
-  "changesets": [
-    ".changeset/pre/openkey-sign-out-verdict.md"
-  ]
-}
