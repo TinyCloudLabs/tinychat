@@ -157,6 +157,16 @@ export class ActionDesk {
     else ledger.keys = [];
   }
 
+  /**
+   * Account erase: the bots' ledgers go whole, uncollected proposals included, and so do the approvals issued to them.
+   * The ledger file is saved even when nothing changed, so a save that failed before is retried. False when it fails.
+   */
+  erase(botIds: ReadonlySet<string>): boolean {
+    for (const botId of botIds) this.#ledgers.delete(botId);
+    for (const [id, entry] of this.#issued) if (botIds.has(entry.bot)) this.#issued.delete(id);
+    return this.#persist();
+  }
+
   #persist(): boolean {
     const now = this.#now();
     for (const [id, entry] of this.#issued) if (entry.expiresAt + SPEND_GRACE_MS <= now) this.#issued.delete(id);

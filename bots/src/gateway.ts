@@ -393,7 +393,11 @@ export class Gateway {
   /** The owner map could not be saved: model calls are refused until it is, or a restart could split an owner's total. */
   #ownersUnsaved = false;
   readonly #secrets: SecretGrants | undefined;
+  /** Every sealed request, whether or not secret calls are enabled here (they need `secretNet`): an erase removes them all. */
+  readonly #sealed: SecretGrants | undefined;
   readonly #secretNet: GuardDeps | undefined;
+  /** Bots erased with their account: a call still in flight for one must not count its use again (cleared by setToken). */
+  readonly #erased = new Set<string>();
 
   constructor(cfg: GatewayConfig, deps: GatewayDeps = {}) {
     this.#cfg = cfg;
@@ -416,6 +420,7 @@ export class Gateway {
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
     this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore, botId => this.#meetings.held(botId));
     this.#secrets = deps.secretNet ? deps.secrets : undefined;
+    this.#sealed = deps.secrets;
     this.#secretNet = deps.secretNet;
   }
 
@@ -425,6 +430,7 @@ export class Gateway {
    */
   setToken(botId: string, token: string, ownerId: string = botId): void {
     this.#tokens.set(botId, token);
+    this.#erased.delete(botId);
     if (ownerId === botId || this.#owners.has(botId)) return;
     this.#owners.set(botId, ownerId);
     this.#persistOwners();
@@ -446,6 +452,43 @@ export class Gateway {
     this.#meetings.drop(botId);
     this.#actions.drop(botId);
     this.#known.delete(botId);
+  }
+
+  /** These bots and every bot the owner map names one of them as its owner: what an erase of them must cover. */
+  ownedBots(botIds: readonly string[]): string[] {
+    const ids = new Set(botIds);
+    for (const [botId, ownerId] of this.#owners) if (ids.has(ownerId)) ids.add(botId);
+    return [...ids];
+  }
+
+  /**
+   * Account erase (TC-4416): everything the gateway holds for these bots goes, in memory and on its volume: their
+   * tokens, settings, request and proposal ledgers (uncollected text included), reading marks and counts, issued
+   * approvals, sealed secret requests and per-bot token and web counts, and the owner map's entries for them and for
+   * every bot that names one of them as its owner. The day's totals across all bots stay as they are: they are one
+   * anonymous cap, and lowering them would hand an erased account's tokens back. Every file is saved even when nothing
+   * changed, so a save that failed before is retried. False when any save or removal failed; call again.
+   */
+  eraseBots(botIds: readonly string[]): boolean {
+    const ids = new Set(this.ownedBots(botIds));
+    for (const botId of ids) {
+      this.#erased.add(botId);
+      this.dropToken(botId);
+      this.#asks.erase(botId);
+      this.#used.delete(botId);
+      this.#webUsed.delete(botId);
+      this.#owners.delete(botId);
+    }
+    let erased = this.#persist();
+    if (!this.#persistOwners()) erased = false;
+    if (!this.#meetings.erase(ids)) erased = false;
+    if (!this.#actions.erase(ids)) erased = false;
+    try {
+      for (const botId of ids) this.#sealed?.removeBot(botId);
+    } catch {
+      erased = false;
+    }
+    return erased;
   }
 
   /** The owner's current web setting for this bot. Applies from the bot's next call. */
@@ -660,7 +703,7 @@ export class Gateway {
   #charge(botId: string, tokens: number, day: string): boolean {
     this.#rollDay();
     if (day === this.#day) {
-      this.#used.set(botId, Math.max(0, (this.#used.get(botId) ?? 0) + tokens));
+      if (!this.#erased.has(botId)) this.#used.set(botId, Math.max(0, (this.#used.get(botId) ?? 0) + tokens));
       this.#usedTotal = Math.max(0, this.#usedTotal + tokens);
     }
     return this.#persist();
@@ -811,6 +854,8 @@ export class Gateway {
     const logCall = (outcome: string, bytes = 0) =>
       console.log(JSON.stringify({ gateway: "web", bot: botId.slice(0, 12), tool, outcome, bytes }));
     const use = () => {
+      // A call that was in flight when its bot was erased counts nowhere.
+      if (this.#erased.has(botId)) return { searches: 0, pages: 0, blocked: 0 };
       let counts = this.#webUsed.get(botId);
       if (!counts) this.#webUsed.set(botId, (counts = { searches: 0, pages: 0, blocked: 0 }));
       return counts;

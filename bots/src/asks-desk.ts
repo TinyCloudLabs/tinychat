@@ -136,6 +136,11 @@ export class AskDesk {
     }
   }
 
+  /** Account erase: the bot's ledger goes whole, uncollected questions included. */
+  erase(botId: string): void {
+    this.#ledgers.delete(botId);
+  }
+
   /** A web tool was called by the box: anything Main asks from now on may have been shaped by outside text. */
   markOutside(botId: string): void {
     this.#ledger(botId).outside = true;

@@ -149,6 +149,27 @@ export class MeetingDesk {
     this.#settings.delete(botId);
   }
 
+  /**
+   * Account erase: the bots' settings, marks and counts go, and the marks file is saved without them (also when nothing
+   * changed, so a save that failed before is retried). False when it cannot be saved.
+   */
+  erase(botIds: ReadonlySet<string>): boolean {
+    for (const botId of botIds) {
+      this.#settings.delete(botId);
+      this.#marks.delete(botId);
+      this.#today.delete(botId);
+      this.#courierToday.delete(botId);
+      this.#auditToday.delete(botId);
+      this.#auditToday.delete(`courier:${botId}`);
+    }
+    try {
+      this.#options.store?.save(Object.fromEntries(this.#marks));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** The tools of each area the owner's setting has on. */
   tools(botId: string, courierAreas?: readonly ReadArea[]): ReadonlyArray<{ name: string }> {
     return (courierAreas ?? this.#settings.get(botId)?.areas ?? []).flatMap(area => AREA_TOOLS[area].tools);

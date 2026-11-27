@@ -28,6 +28,8 @@ const STOP_GRACE_MS = 15_000;
 /** How long teardown lets `runsc run` finish on its own (OMP closed its output) before killing the sandbox. */
 const EXIT_GRACE_MS = 5_000;
 const GATEWAY_DELETE_TIMEOUT_MS = 1_000;
+/** The gateway's erase waits for the Courier pass in flight, which can reach the network. */
+const ERASE_TIMEOUT_MS = 30_000;
 const GATEWAY_DELETE_DELAYS_MS = [0, 100, 300];
 const STDERR_TAIL_CHARS = 2000;
 const STATE_COPY = join(import.meta.dir, "state-copy-main.ts");
@@ -591,13 +593,13 @@ export class RunscHost implements SandboxLauncher {
   }
 
   /** One request on the gateway's control socket; the body is JSON. Throws unless the answer is 2xx. */
-  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown): Promise<Response> {
+  async #gateway(method: "GET" | "PUT" | "POST" | "DELETE", path: string, body?: unknown, timeoutMs = 5000): Promise<Response> {
     const response = await fetch(`http://gateway${path}`, {
       unix: join(this.#cfg.egressRoot, "control.sock"),
       method,
       headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) throw new Error(`gateway ${method} failed: ${response.status}`);
     return response;
@@ -609,6 +611,12 @@ export class RunscHost implements SandboxLauncher {
 
   async endTurn(layout: BotLayout): Promise<void> {
     await this.#gateway("DELETE", `/bots/${layout.botId}/turn`);
+  }
+
+  /** Account erase: the gateway removes everything it holds for the owner and answers `{ outcome: "gone" }`, or this throws. */
+  async eraseOwner(ownerDid: string, keys: readonly string[]): Promise<void> {
+    const answer: unknown = await (await this.#gateway("POST", `/owners/${encodeURIComponent(ownerDid)}/erase`, { keys }, ERASE_TIMEOUT_MS)).json();
+    if (!isRecord(answer) || answer.outcome !== "gone") throw new Error("gateway erase incomplete");
   }
 
   /** Gives the gateway the owner's saved web setting, before the bot's token is registered and on every message. */

@@ -3,6 +3,8 @@
 //   PUT    /bots/<botId>  {"token": "<64 hex>", "owner": "<64 hex>"}  listen on the bot's socket and accept that
 //                         token; `owner` is the id of its owner's Main (left out, the bot is its own owner)
 //   DELETE /bots/<botId>                         stop listening and remove the directory
+//   POST   /owners/<did>/erase  {"keys": [...]}  account erase: stop the owner's bots (Main, the sibling `keys`, Courier's)
+//                         and delete their ledgers, tokens, sealed secrets and Courier state; {"outcome": "gone" | "failed"}
 //   PUT    /bots/<botId>/web  {"mode", "hosts"}  the owner's web-access setting (applies from the bot's next call)
 //   GET    /bots/<botId>/web                     {"available", "today": {"searches", "pages", "blocked"}}
 //   POST   /bots/<botId>/web/addresses {"urls"}  page addresses the owner typed, which the bot may then read
@@ -38,6 +40,9 @@ import { BOT_ID } from "./owner";
 import { nodeSecretReader } from "./secret-node";
 import { secretRoute, SECRETS_ROUTE } from "./secret-routes";
 import { startSecretGrants } from "./secret-start";
+import { removeSealedFor } from "./secret-store";
+import { ownerErase, OWNER_ERASE_ROUTE } from "./owner-erase";
+import { eraseCourierFiles } from "./courier/erase";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
 import { parseAsksPush } from "./asks";
@@ -132,6 +137,16 @@ const control = Bun.serve({
     if (pathname.startsWith("/courier/")) {
       try { return await courier?.control(req) ?? new Response(null, { status: 404 }); }
       catch { return new Response(null, { status: 503 }); }
+    }
+    const eraseMatch = OWNER_ERASE_ROUTE.exec(pathname);
+    if (eraseMatch) {
+      return ownerErase(req, eraseMatch, {
+        gateway,
+        unlisten,
+        forgetReceipts: botId => void aci?.take(botId),
+        eraseSealed: secrets ? undefined : botIds => removeSealedFor(cfg.secretGrantsDir!, botIds),
+        eraseCourier: owner => courier ? courier.erase(owner) : eraseCourierFiles(dirname(cfg.budgetFile), owner),
+      });
     }
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
     const turnMatch = /^\/bots\/([0-9a-f]{64})\/turn$/.exec(pathname);

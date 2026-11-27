@@ -1,6 +1,6 @@
 // Gateway-only sealed peer state. Public records never contain portable delegations or pending authority.
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readdirSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 import type { CourierLibraryStore, PairedPeer, PairPending } from "./lib-adapter";
@@ -34,6 +34,11 @@ export interface CourierPeerStore {
   transaction: CourierLibraryStore["transaction"];
   /** The SDK's opaque records for this owner and Courier identity, read under the same per-owner mutex. */
   sdkRecords(owner: string, courierDid: string): Promise<Array<{ handle: string; record: Record<string, unknown> }>>;
+  /**
+   * Account erase: every row and every SDK record of the owner, with no call to the owner's space. Nothing is revoked
+   * here, so the delegations already signed run to their expiry.
+   */
+  eraseOwner(owner: string): Promise<void>;
   /** Releases the state-dir writer lock. */
   close(): void;
 }
@@ -53,6 +58,38 @@ const COURIER_HOST = "https://node.tinycloud.xyz";
 function syncDir(path: string) {
   const handle = openSync(path, "r");
   try { fsyncSync(handle); } finally { closeSync(handle); }
+}
+
+/** True for a sealed SDK record that belongs to this owner: its binding names the owner first. */
+function boundTo(record: unknown, owner: string): boolean {
+  if (!isRecord(record) || typeof record.binding !== "string") return false;
+  try {
+    const binding: unknown = JSON.parse(record.binding);
+    return Array.isArray(binding) && binding[0] === owner;
+  } catch { return false; }
+}
+
+/**
+ * Removes an owner's peer state from the state directory: the owner's sealed rows, and every tenant directory of SDK
+ * records bound to the owner (whatever Courier identity they name). A record that does not open with this key cannot be
+ * told apart from another owner's and stays. Calls nothing outside this directory.
+ */
+export function erasePeerFiles(dir: string, owner: string, sealKey: Uint8Array): void {
+  const lower = owner.toLowerCase();
+  if (!OWNER.test(lower)) throw new Error("invalid_courier_owner");
+  const drop = (path: string) => {
+    if (!lstatSync(path, { throwIfNoEntry: false })) return;
+    rmSync(path, { recursive: true, force: true });
+    syncDir(dirname(path));
+  };
+  drop(join(dir, hash(lower)));
+  const sdkRoot = join(dir, "sdk");
+  if (!existsSync(sdkRoot)) return;
+  for (const tenant of readdirSync(sdkRoot)) {
+    const tenantDir = join(sdkRoot, tenant);
+    if (!lstatSync(tenantDir).isDirectory()) continue;
+    if (sealedGrantStore(tenantDir, sealKey).load().some(entry => boundTo(entry.record, lower))) drop(tenantDir);
+  }
 }
 
 export function isCourierPeer(value: unknown): value is CourierPeer {
@@ -192,6 +229,15 @@ export function createCourierPeerStore(dir: string, sealKey: Uint8Array, now: ()
     return { handle: value.handle, record: value.record };
   }
   return {
+    async eraseOwner(owner) {
+      writable();
+      const lower = owner.toLowerCase();
+      await sdkSerial(lower, async () => {
+        erasePeerFiles(dir, lower, sealKey);
+        // A removed directory must be created and synced again by the next save.
+        durableDirs.clear();
+      });
+    },
     close() {
       if (lock === undefined) return;
       closeSync(lock);
