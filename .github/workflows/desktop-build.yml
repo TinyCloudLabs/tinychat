@@ -216,6 +216,14 @@ jobs:
             desktop/src-tauri/target/release/incremental; do
             du -sk "$path" 2>/dev/null | awk -v path="$path" '{ printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, path; found=1 } END { if (!found) printf "missing %s\n", path }' || true
           done || true
+          build_dir=desktop/src-tauri/target/release/build
+          build_sizes="$(du -sk "$build_dir"/*/ 2>/dev/null | sort -nr | head -25)" || true
+          printf 'Largest release/build directories (MiB, KiB):\n' || true
+          printf '%s\n' "$build_sizes" | awk -F '\t' 'NF > 1 { printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, $2 }' || true
+          printf 'out directories for the 10 largest release/build directories (MiB, KiB):\n' || true
+          printf '%s\n' "$build_sizes" | head -10 | cut -f2- | while IFS= read -r path; do
+            du -sk "${path%/}/out" 2>/dev/null | awk -v path="${path%/}/out" '{ printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, path }' || true
+          done || true
           sw_vers || true
           printf 'TMPDIR=%s\n' "${TMPDIR:-}" || true
 
