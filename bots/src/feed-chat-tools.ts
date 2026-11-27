@@ -1,6 +1,7 @@
-// TrustBot's feed and chat tools on the gateway's `app` MCP server: read only, offered while the owner's "Feed and
-// chats" setting is on. The backend runs each read under the owner's grant (backend/src/trustbot-reads/feed-chat.ts);
-// the gateway wraps every result as untrusted text. Limits here match the backend's.
+// TrustBot's feed and chat tools on the gateway's `app` MCP server: read only, offered to Main always and answered
+// only while the owner's "Feed and chats" setting is on. The backend runs each read under the owner's grant
+// (backend/src/trustbot-reads/feed-chat.ts); the gateway wraps every result as untrusted text. Limits here match the
+// backend's.
 // Details: TC-3794
 
 export const FEED_CHAT_TOOLS = [
@@ -68,7 +69,7 @@ export const FEED_CHAT_RECORD_KIND: Readonly<Record<FeedChatTool, "feed card" | 
 /** What a refused or failed call says to the model: fixed sentences, never backend or stored text. The daily count and
  * one-at-a-time sentences are shared by every area (meeting-reads.ts READ_LIMIT_ERRORS). */
 export const FEED_CHAT_ERRORS = {
-  off: "Reading the feed and chats is off. The owner can turn it on in this chat under Feed and chats.",
+  off: "Reading the feed and chats is off. The owner can turn it on in this chat.",
   ended: "Your access to the owner's feed and chats has ended. They can turn it on in this chat under Feed and chats.",
   not_found: "That card or chat isn't there.",
   unavailable: "The feed and chats can't be read right now.",

@@ -298,7 +298,7 @@ export interface GatewayDeps {
   now?: () => number;
   store?: BudgetStore;
   ownerStore?: OwnerStore;
-  /** TrustBot's meeting reads (meeting-reads.ts). Left out, the tools are never offered and every read is refused. */
+  /** TrustBot's reads (meeting-reads.ts). Left out, every read is refused and the read tools follow the setting. */
   meetings?: MeetingDesk;
   /** The approvals `propose_action` issued; in memory only without it. */
   actionStore?: ActionLedgerStore;
@@ -380,6 +380,9 @@ export class Gateway {
   readonly #webUsed = new Map<string, WebUse>();
   readonly #asks = new AskDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId);
   readonly #meetings: MeetingDesk;
+  /** Whether deps.meetings was given. Without it (tests, local runs) no read can succeed even once the owner turns it
+   *  on, so Main's read tools follow the setting as for any other bot, instead of being listed while off. */
+  readonly #readsGiven: boolean;
   readonly #actions: ActionDesk;
   #webTotal = { searches: 0, pages: 0 };
   readonly #mcpOpen = new Map<string, number>();
@@ -413,6 +416,7 @@ export class Gateway {
     }
     this.#ownerStore = deps.ownerStore;
     this.#meetings = deps.meetings ?? new MeetingDesk({ backendOrigin: "", backendCallSecret: undefined });
+    this.#readsGiven = deps.meetings !== undefined;
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
     this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore, botId => this.#meetings.held(botId));
     this.#secrets = deps.secretNet ? deps.secrets : undefined;
@@ -692,10 +696,11 @@ export class Gateway {
   /**
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
-   * `app` (ask_owner, request_secret, propose_action, the meeting tools, and with approved secrets call_with_secret and
-   * list_secrets), listed only while the owner's setting for it is on (the secret tools also while a secret is approved,
-   * which runs to its date) and checked again on each call. A setting change takes effect at the bot's next call,
-   * without restarting its sandbox. Both serve only the tools on their allow-list (tool-policy.ts): tools/list drops any
+   * `app` (ask_owner, request_secret, propose_action, and with approved secrets call_with_secret and list_secrets),
+   * listed only while the owner's setting for it is on (the secret tools also while a secret is approved, which runs to
+   * its date) and checked again on each call. Main's meeting and feed/chat read tools are listed even while their area
+   * is off (meeting-reads.ts mainTools): the app offers the owner that access when the bot tries a read, and the call
+   * is refused until it is on. A setting change takes effect at the bot's next call, without restarting its sandbox. Both serve only the tools on their allow-list (tool-policy.ts): tools/list drops any
    * other, and tools/call refuses any other name before dispatch.
    */
   async #mcp(botId: string, req: Request, server: "web" | "app"): Promise<Response> {
@@ -733,9 +738,11 @@ export class Gateway {
         );
       }
       if (method === "ping") return Response.json(rpcResult(id, {}));
-      // The app tools are offered only while the owner's setting is on; the call is checked again on every call.
+      // The app tools follow the owner's setting, except Main's meeting and feed/chat reads, listed while off so the
+      // bot's attempt can prompt the app to offer access; every call is checked against the setting again.
       if (method === "tools/list") {
-        const tools = server === "app" ? [...this.#appTools(botId), ...this.#meetings.tools(botId)] : TOOLS;
+        const reads = this.#readsGiven && this.ownerOf(botId) === botId ? this.#meetings.mainTools(botId) : this.#meetings.tools(botId);
+        const tools = server === "app" ? [...this.#appTools(botId), ...reads] : TOOLS;
         return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, tools) }));
       }
       if (method === "tools/call") {
