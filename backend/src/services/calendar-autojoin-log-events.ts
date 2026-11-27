@@ -1,4 +1,4 @@
-import { emitToStdout, requestLogAccountHash } from "../request-context.js";
+import { emitToStdout, requestLogAccountHash, requestLogInviteHash } from "../request-context.js";
 import type { CalendarConnection, CalendarOccurrence } from "./calendar-autojoin-store.js";
 
 const DECISIONS = [
@@ -38,7 +38,7 @@ export interface CalendarScanCounts {
 export type CalendarAutojoinLogEvent =
   | ({ event: "calendar_autojoin_tick" } & CalendarTickCounts)
   | ({ event: "calendar_autojoin_scan" } & CalendarScanCounts)
-  | { event: "calendar_autojoin_decision"; reason: CalendarDecisionReason; start?: string; tenant_hash?: string }
+  | { event: "calendar_autojoin_decision"; reason: CalendarDecisionReason; start?: string; tenant_hash?: string; invite_hash?: string }
   | { event: "calendar_autojoin_connection"; state: CalendarConnection["state"] | "unknown"; code?: CalendarConnectionCode; tenant_hash?: string };
 
 function tenantHash(tenant: string): { tenant_hash: string } | object {
@@ -46,10 +46,18 @@ function tenantHash(tenant: string): { tenant_hash: string } | object {
   return hash ? { tenant_hash: hash.slice(0, 12) } : {};
 }
 
-/** Outsider-controlled invitations cannot associate a start time with the keyed tenant identity. */
+/**
+ * Invitation decisions (not_accepted, event_ineligible) carry no start time and no account pseudonym: an outsider
+ * picks an invitation's start, and the account pseudonym would link it to the tenant's other lines. They carry an
+ * invite-only pseudonym instead, which links only to other invitation decisions. Every other decision carries the
+ * occurrence start and, when the key is configured, the account pseudonym.
+ */
 export function calendarDecisionEvent(row: Pick<CalendarOccurrence, "tenant" | "start">, reason: CalendarDecisionReason): CalendarAutojoinLogEvent & { event: "calendar_autojoin_decision" } {
   const closed = DECISIONS.includes(reason) ? reason : "unknown";
-  if (closed === "not_accepted" || closed === "event_ineligible") return { event: "calendar_autojoin_decision", reason: closed };
+  if (closed === "not_accepted" || closed === "event_ineligible") {
+    const invite = requestLogInviteHash(row.tenant);
+    return { event: "calendar_autojoin_decision", reason: closed, ...(invite ? { invite_hash: invite.slice(0, 12) } : {}) };
+  }
   return { event: "calendar_autojoin_decision", reason: closed, start: new Date(row.start).toISOString(), ...tenantHash(row.tenant) };
 }
 

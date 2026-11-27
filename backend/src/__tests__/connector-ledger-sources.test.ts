@@ -49,6 +49,9 @@ class FakeControl implements ConnectorControl {
     this.ops.push(`clear-ledger:${source}`);
     this.ledgers.delete(this.key(source, address));
   }
+  async markDeleted(): Promise<void> {}
+  async readDeleted(): Promise<boolean> { return false; }
+  async clearDeleted(): Promise<void> {}
   async quarantineLedger(): Promise<void> {}
   async clearQuarantinedLedger(): Promise<void> {}
 }

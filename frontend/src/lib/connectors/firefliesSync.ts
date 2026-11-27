@@ -55,6 +55,8 @@ export interface SyncStore {
   listKnownSourceIds(tcw: TinyCloudWeb, source: string): Promise<StoreResult<string[]>>;
   listTranscriptBodyIds(tcw: TinyCloudWeb, source: string): Promise<StoreResult<Set<string>>>;
   clearFirefliesAttempt?(tcw: TinyCloudWeb): Promise<StoreResult<void>>;
+  isMeetingDeleted(tcw: TinyCloudWeb, source: "fireflies", sourceId: string): Promise<StoreResult<boolean>>;
+  deleteSourceMeeting(tcw: TinyCloudWeb, source: "fireflies", sourceId: string): Promise<StoreResult<void>>;
   insertMeeting(tcw: TinyCloudWeb, meeting: NormalizedMeeting): Promise<StoreResult<boolean>>;
   putTranscriptBody(
     tcw: TinyCloudWeb,
@@ -592,9 +594,27 @@ async function runFirefliesSync(
                         || connectionBeforeWrite.data.status === "disconnected"));
                   if (!mayWrite) return { disconnected: true };
                   if (!current()) return null;
+                  const before = await store.isMeetingDeleted(tcw, SOURCE, meeting.sourceId);
+                  if (!before.ok) return { error: before.error };
+                  if (before.data) return { deleted: true };
                   const insert = await store.insertMeeting(tcw, meeting);
                   if (!insert.ok) return { insert, body: null };
+                  const beforeBody = await store.isMeetingDeleted(tcw, SOURCE, meeting.sourceId);
+                  if (!beforeBody.ok) return { error: beforeBody.error };
+                  if (beforeBody.data) {
+                    const removed = await store.deleteSourceMeeting(tcw, SOURCE, meeting.sourceId);
+                    if (!removed.ok) return { error: removed.error };
+                    return { deleted: true };
+                  }
                   const body = await store.putTranscriptBody(tcw, SOURCE, meeting.sourceId, sentences);
+                  if (!body.ok) return { insert, body };
+                  const after = await store.isMeetingDeleted(tcw, SOURCE, meeting.sourceId);
+                  if (!after.ok) return { error: after.error };
+                  if (after.data) {
+                    const removed = await store.deleteSourceMeeting(tcw, SOURCE, meeting.sourceId);
+                    if (!removed.ok) return { error: removed.error };
+                    return { deleted: true };
+                  }
                   return { insert, body };
                 });
                 if (!itemWrite) {
@@ -607,12 +627,20 @@ async function runFirefliesSync(
                   cursorBlocked = true;
                   return false;
                 }
+                if ("deleted" in itemWrite) {
+                  pendingIds.delete(id);
+                  suspectIds.delete(id);
+                  suspectSeenIds.delete(id);
+                  suspectProofIds.delete(id);
+                  result.skipped += 1;
+                  return true;
+                }
                 if ("error" in itemWrite) {
                   storedPrefix = false;
                   cursorBlocked = true;
                   terminal = fromStore(
-                    itemWrite.error ?? { code: "STORE_ERROR", message: "Connection read failed" },
-                    "getConnection before item write",
+                    itemWrite.error ?? { code: "STORE_ERROR", message: "Meeting storage check failed" },
+                    "meeting storage check",
                   );
                   return false;
                 }
