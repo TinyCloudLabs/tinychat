@@ -79,7 +79,7 @@ test("the sheet says the delete cannot be undone and names the way to allow impo
   root = createRoot(node);
   await act(async () => root.render(<DeleteGranolaSheet open title="Planning" busy={false} error={null} combinedCount={0} onKeep={() => {}} onConfirm={() => {}} />));
   expect(node.textContent).toContain("It can’t be undone.");
-  expect(node.textContent).toContain("unless you choose “Allow deleted meetings back”.");
+  expect(node.textContent).toContain("unless you choose “Allow deleted Granola meetings back”.");
   expect(node.querySelector('[data-testid="delete-granola-combined"]')).toBeNull();
 });
 

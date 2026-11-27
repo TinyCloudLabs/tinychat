@@ -34,6 +34,8 @@ const client: GmeetSyncClient = {
   listTranscriptEntries: async () => ({ ok: true, data: [] }),
 };
 const store: GmeetSyncStore = {
+  isMeetingDeleted: async () => ok(false),
+  deleteSourceMeeting: async () => ok(undefined),
   getConnection: async () => ok(null),
   putTranscriptBody: async () => ok(undefined),
   upsertMeeting: async () => ok({ id: "x", inserted: true, createdAt: "t" }),

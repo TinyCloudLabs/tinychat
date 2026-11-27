@@ -42,6 +42,7 @@ beforeEach(() => {
     if (key === `DELETE ${BASE}/api/transcriber/meetings`) {
       return Response.json({ removed: 0, deleting: 0, listOnly: 0, notDeleted: 0, privateCloudDeleted: null });
     }
+    if (key === `DELETE ${BASE}/api/connectors/webhooks/deleted`) return new Response(null, { status: 204 });
     const next = answers[key];
     if (!next) throw new Error(`no answer for ${key} Bearer ${SENTINEL}`);
     return new Response(JSON.stringify(next.body ?? {}), { status: next.status });
@@ -111,6 +112,7 @@ test("the two permissions are listed, taken from the server and revoked at the n
     `DELETE ${GRANT}`,
     `GET ${CREDS}`,
     `DELETE ${CREDS}`,
+    `DELETE ${BASE}/api/connectors/webhooks/deleted`,
   ]);
   expect(page.revoked).toEqual(["cid-secrets", "cid-meetings"]);
   expect(localStorage.getItem(PENDING_KEY)).toBeNull();
