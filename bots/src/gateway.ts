@@ -454,6 +454,13 @@ export class Gateway {
     this.#known.delete(botId);
   }
 
+  /** These bots and every bot the owner map names one of them as its owner: what an erase of them must cover. */
+  ownedBots(botIds: readonly string[]): string[] {
+    const ids = new Set(botIds);
+    for (const [botId, ownerId] of this.#owners) if (ids.has(ownerId)) ids.add(botId);
+    return [...ids];
+  }
+
   /**
    * Account erase (TC-4416): everything the gateway holds for these bots goes, in memory and on its volume: their
    * tokens, settings, request and proposal ledgers (uncollected text included), reading marks and counts, issued
@@ -463,8 +470,7 @@ export class Gateway {
    * changed, so a save that failed before is retried. False when any save or removal failed; call again.
    */
   eraseBots(botIds: readonly string[]): boolean {
-    const ids = new Set(botIds);
-    for (const [botId, ownerId] of this.#owners) if (ids.has(ownerId)) ids.add(botId);
+    const ids = new Set(this.ownedBots(botIds));
     for (const botId of ids) {
       this.#erased.add(botId);
       this.dropToken(botId);

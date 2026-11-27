@@ -96,10 +96,14 @@ async function setup() {
   await secrets.ask(THEIRS, "3".repeat(24), ask(OTHER));
 
   const unlistened: string[] = [];
+  const forgotten: string[] = [];
+  const sealedFor: string[][] = [];
   const courierErased: string[] = [];
   const deps: OwnerEraseDeps = {
     gateway,
     unlisten: botId => void unlistened.push(botId),
+    forgetReceipts: botId => void forgotten.push(botId),
+    eraseSealed: botIds => void sealedFor.push([...botIds]),
     eraseCourier: async owner => { if (failing.courier) throw new Error(`Courier down for ${owner}`); courierErased.push(owner); },
   };
   const post = (owner: string, body: unknown, method = "POST") => {
@@ -110,7 +114,7 @@ async function setup() {
   const json = <T = Record<string, unknown>>(name: string): T => JSON.parse(readFileSync(path(name), "utf8"));
   const perBot = () => ids(json<{ perBot: Record<string, number> }>("budget.json").perBot);
   const sealed = () => readdirSync(secretsDir).filter(name => name.endsWith(".json"));
-  return { gateway, chat, post, json, perBot, sealed, unlistened, courierErased, failing, cfg, path };
+  return { gateway, secrets, chat, post, json, perBot, sealed, unlistened, forgotten, sealedFor, courierErased, failing, cfg, path };
 }
 
 
@@ -132,14 +136,22 @@ describe("the control route", () => {
     expect([...s.unlistened].sort()).toEqual([MAIN, SIBLING, COURIER].sort());
   });
 
-  test("a bot the supervisor did not list is still removed, because the owner map names its owner", async () => {
+  test("a bot the manifest lost is erased in every step, because the owner map names its owner", async () => {
     const s = await setup();
     const unlisted = botIdFor(OWNER, "cd".repeat(16));
     s.gateway.setToken(unlisted, tokenOf(unlisted), MAIN);
     expect(await s.chat(unlisted)).toBe(200);
+    await s.secrets.ask(unlisted, "4".repeat(24), ask(OWNER));
+    expect(s.sealed()).toHaveLength(4);
     expect(await (await s.post(OWNER, { keys: [KEY_A] })).json()).toEqual({ outcome: "gone" });
+    // Listener, egress directory and token (unlisten), receipts, the sealed-file cleanup, ledgers, owner map and sealed files.
+    expect(s.unlistened).toContain(unlisted);
+    expect(s.forgotten).toContain(unlisted);
+    expect(s.sealedFor[0]).toContain(unlisted);
     expect(s.perBot()).not.toContain(unlisted);
     expect(s.json("owners.json")).not.toHaveProperty(unlisted);
+    expect(s.sealed()).toHaveLength(1);
+    expect(await s.chat(unlisted)).not.toBe(200);
   });
 
   test("an erased bot's token no longer works, and a call in flight cannot put its count back", async () => {

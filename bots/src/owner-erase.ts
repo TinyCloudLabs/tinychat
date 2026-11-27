@@ -12,7 +12,7 @@ export const OWNER_ERASE_ROUTE = /^\/owners\/([^/]+)\/erase$/;
 const MAX_KEYS = 64;
 
 export interface OwnerEraseDeps {
-  gateway: Pick<Gateway, "eraseBots">;
+  gateway: Pick<Gateway, "eraseBots" | "ownedBots">;
   /** Stops a bot's listener, drops its token and removes its egress directory. */
   unlisten(botId: string): void;
   /** Drops what the verified-fetch receipts hold for a bot. */
@@ -35,8 +35,9 @@ export async function ownerErase(req: Request, route: RegExpExecArray, deps: Own
     || !keys.every((key): key is string => typeof key === "string" && BOT_KEY.test(key))) {
     return new Response(null, { status: 400 });
   }
-  const ids = [botIdFor(owner), ...[...new Set(keys)].map(key => botIdFor(owner, key)), courierBotId(owner)];
+  // Every step runs over the bots the gateway's owner map names for the owner too, so a sibling the manifest lost goes as well.
   try {
+    const ids = deps.gateway.ownedBots([botIdFor(owner), ...[...new Set(keys)].map(key => botIdFor(owner, key)), courierBotId(owner)]);
     for (const id of ids) {
       deps.unlisten(id);
       deps.forgetReceipts?.(id);
