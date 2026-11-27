@@ -1,9 +1,0 @@
-{
-  "versions": {
-    "exo-desktop": "0.22.8",
-    "@tinychat/frontend": "0.22.8"
-  },
-  "changesets": [
-    ".changeset/pre/agent-guides-prompts-pin-3360636a.md"
-  ]
-}
