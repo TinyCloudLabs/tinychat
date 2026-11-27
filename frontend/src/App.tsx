@@ -178,7 +178,8 @@ import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { registryPublishConfig } from "./lib/registryConsent/config";
-import { FinishSetupLinkHost } from "./shell/FinishSetupNotice";
+import { RoutedFinishSetupLinkHost } from "./shell/FinishSetupNotice";
+import { appDialogOpen } from "./shell/modalOpen";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
@@ -1871,7 +1872,8 @@ export function App() {
         />
       )}
       <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
-      <FinishSetupLinkHost tcw={tcw} ready={state === "ready"} searchKey={location.search} />
+      <RoutedFinishSetupLinkHost tcw={tcw} ready={state === "ready"}
+        blocked={appDialogOpen({ storageFull: storageDialogOpen, pendingVoiceNoteSignOut: pendingVoiceNoteSignOut !== null, pricing: pricingOpen, rates: ratesOpen })} />
       <PendingVoiceNoteSignOutDialog
         open={pendingVoiceNoteSignOut !== null}
         count={pendingVoiceNoteSignOut?.count ?? 0}
