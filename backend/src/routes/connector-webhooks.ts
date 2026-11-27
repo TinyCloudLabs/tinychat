@@ -1469,7 +1469,8 @@ export class ConnectorControlStore implements ConnectorControl {
           keys.push(key);
         }
         const next = "nextCursor" in page ? page.nextCursor : undefined;
-        if (page.truncated !== true && next === undefined) break;
+        const truncated = "truncated" in page && page.truncated === true;
+        if (!truncated && next === undefined) break;
         if (typeof next !== "string" || !next || cursors.has(next)) {
           throw new Error("Truncated deleted-meeting listing");
         }
