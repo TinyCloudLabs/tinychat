@@ -14,16 +14,21 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { BackgroundSyncSection, BackgroundSyncView, consentVariantForProbe } from "./BackgroundSyncSection";
 import {
-  HISTORICAL_RESYNC_CONFIRM_COPY,
   applyEnableResult,
   dismissReveal,
   initialBackgroundSyncState,
   supportsBackgroundNotifications,
   type BackgroundSyncState,
 } from "./backgroundSyncState";
+import { GranolaAllowBack } from "./GranolaAllowBack";
+import { installDom } from "@/test/dom";
 import type { ConnectorWebhookEnabled } from "@/lib/connectors/webhooksApi";
 import type {
   ConnectorConnection,
@@ -62,9 +67,6 @@ function render(state: BackgroundSyncState): string {
       onRetry={noop}
       onDismissReveal={noop}
       onCopy={noop}
-      onRequestHistoricalResync={noop}
-      onCancelHistoricalResync={noop}
-      onConfirmHistoricalResync={noop}
     />,
   );
 }
@@ -135,9 +137,6 @@ function renderCohort(
       onRetry={noop}
       onDismissReveal={noop}
       onCopy={noop}
-      onRequestHistoricalResync={noop}
-      onCancelHistoricalResync={noop}
-      onConfirmHistoricalResync={noop}
     />,
   );
 }
@@ -377,42 +376,54 @@ describe("the last processing result", () => {
   });
 });
 
-// ── Allow historical re-sync (FE4) ───────────────────────────────────
+// The source-specific control lives in Meeting sources, not the background-sync section.
+describe("Fireflies allow-back", () => {
+  const note = "After this, Fireflies syncs can bring back meetings you deleted.";
+  const control = () => <GranolaAllowBack source="fireflies" tcw={{} as TinyCloudWeb}
+    backendUrl="https://backend.invalid" sessionStore={{} as SessionStore} note={note} />;
 
-describe("allow historical re-sync", () => {
   test("is offered as a separate, plainly-labelled action", () => {
-    const html = render(enabledState());
+    const html = renderToStaticMarkup(control());
     expect(text(html).toLowerCase()).toContain("deleted");
-    expect(html).toContain(HISTORICAL_RESYNC_CONFIRM_COPY.heading);
+    expect(html).toContain("Allow deleted Fireflies meetings back");
   });
 
   test("does nothing destructive until it is confirmed", () => {
-    // Un-armed: the explanation and the confirm control are simply absent.
-    const html = render(enabledState());
-    expect(html).not.toContain(HISTORICAL_RESYNC_CONFIRM_COPY.confirmLabel);
-    expect(html).not.toContain(HISTORICAL_RESYNC_CONFIRM_COPY.body);
+    const html = renderToStaticMarkup(control());
+    expect(html).not.toContain("Allow them back");
+    expect(html).not.toContain("This can’t be undone.");
   });
 
-  test("armed, it explains exactly what comes back and offers a way out", () => {
-    const html = render(enabledState({ resyncConfirming: true }));
-    expect(html).toContain(HISTORICAL_RESYNC_CONFIRM_COPY.body);
-    expect(html).toContain(HISTORICAL_RESYNC_CONFIRM_COPY.confirmLabel);
-    expect(html).toContain(HISTORICAL_RESYNC_CONFIRM_COPY.cancelLabel);
+  test("armed, it explains exactly what comes back and offers a way out", async () => {
+    const cleanup = installDom();
+    const node = document.createElement("div");
+    document.body.append(node);
+    const root = createRoot(node);
+    try {
+      await act(async () => root.render(control()));
+      await act(async () => node.querySelector("button")!.click());
+      expect(node.textContent).toContain("We keep a list of the Fireflies meetings you deleted, so a sync doesn’t bring them back. If you clear it, a sync can bring those meetings back. This can’t be undone.");
+      expect(node.textContent).toContain("Allow them back");
+      expect(node.textContent).toContain("Keep them deleted");
+    } finally {
+      await act(async () => root.unmount());
+      cleanup();
+    }
   });
 
-  test("is not offered while the one-time secret is on screen", () => {
+  test("is not duplicated while the one-time secret is on screen", () => {
     const html = render(
       enabledState({
         revealClosed: false,
         reveal: { url: DELIVERY_URL, secret: DELIVERY_SECRET, rotated: false },
       }),
     );
-    expect(html).not.toContain(HISTORICAL_RESYNC_CONFIRM_COPY.heading);
+    expect(html).not.toContain("Allow deleted Fireflies meetings back");
   });
 
-  test("is not offered when background notifications are off", () => {
+  test("is not duplicated when background notifications are off", () => {
     const html = render({ ...initialBackgroundSyncState(), phase: "off" });
-    expect(html).not.toContain(HISTORICAL_RESYNC_CONFIRM_COPY.heading);
+    expect(html).not.toContain("Allow deleted Fireflies meetings back");
   });
 });
 
