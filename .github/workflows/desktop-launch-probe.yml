@@ -1,0 +1,100 @@
+name: Desktop launch check probe
+
+# Runs the release's launch check on macos-26 against a real, signed desktop app, outside a release (TC-4463). It
+# calls the same reusable workflow a release calls (desktop-launch-check.yml), so the workflow step around the script
+# runs here and not first at release time. The app is one that was already built and signed: the latest published
+# release's archive, or, from a manual run, the archive of a given desktop-release run. No project code is built.
+# No environment, no secret; reads contents (and, to fetch a run's archive, actions).
+on:
+  pull_request:
+    paths:
+      - .github/workflows/desktop-launch-check.yml
+      - .github/workflows/desktop-launch-probe.yml
+      - scripts/release/desktop-launch-check.sh
+      - scripts/release/desktop-launch-observe.swift
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: Optional desktop-release run whose built app to check (with artifact-name); empty checks the latest release
+        type: string
+        required: false
+      artifact-name:
+        description: Artifact of that run, e.g. exo-0.22.13-macos-arm64
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    name: Fetch a signed app
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      bundle-version: ${{ steps.read.outputs.bundle-version }}
+      signed: ${{ steps.read.outputs.signed }}
+    steps:
+      - name: Download the archive of a desktop-release run
+        if: inputs.run-id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/app
+
+      - name: Download the latest release's archive
+        if: inputs.run-id == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern '*.app.zip' --dir "$RUNNER_TEMP/app"
+          title=$(gh release view --repo "$GITHUB_REPOSITORY" --json name --jq .name)
+          case "$title" in *UNSIGNED*) echo unsigned > "$RUNNER_TEMP/mode" ;; *) echo signed > "$RUNNER_TEMP/mode" ;; esac
+
+      - name: Read the app's version and build number
+        id: read
+        run: |
+          zips=()
+          while IFS= read -r found; do zips+=("$found"); done < <(find "$RUNNER_TEMP/app" -name '*.app.zip')
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "::error::Expected one .app.zip, found: ${zips[*]}"
+            exit 1
+          fi
+          mode=signed
+          if [ -f "$RUNNER_TEMP/mode" ]; then mode=$(cat "$RUNNER_TEMP/mode"); fi
+          python3 - "${zips[0]}" "$mode" <<'PY' >> "$GITHUB_OUTPUT"
+          import plistlib, re, sys, zipfile
+          archive = zipfile.ZipFile(sys.argv[1])
+          names = [n for n in archive.namelist() if re.fullmatch(r"[^/]+\.app/Contents/Info\.plist", n)]
+          assert len(names) == 1, names
+          info = plistlib.loads(archive.read(names[0]))
+          version = str(info["CFBundleShortVersionString"])
+          build = str(info["CFBundleVersion"])
+          assert re.fullmatch(r"\d+\.\d+\.\d+", version) and re.fullmatch(r"\d+", build), (version, build)
+          print(f"version={version}")
+          print(f"bundle-version={build}")
+          print(f"signed={'true' if sys.argv[2] == 'signed' else 'false'}")
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: probe-app
+          path: ${{ runner.temp }}/app
+          if-no-files-found: error
+          retention-days: 1
+
+  launch:
+    name: Launch check
+    needs: fetch
+    uses: ./.github/workflows/desktop-launch-check.yml
+    with:
+      artifact-name: probe-app
+      version: ${{ needs.fetch.outputs.version }}
+      bundle-version: ${{ needs.fetch.outputs.bundle-version }}
+      signed: ${{ needs.fetch.outputs.signed == 'true' }}

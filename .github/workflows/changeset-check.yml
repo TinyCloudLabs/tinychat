@@ -59,4 +59,4 @@ jobs:
         run: node --test scripts/__tests__/security-gates.test.mjs
 
       - name: Desktop launch check tests
-        run: node --test scripts/__tests__/desktop-launch-check.test.mjs
+        run: node --test scripts/__tests__/desktop-launch-check.test.mjs scripts/__tests__/desktop-launch-bash32.test.mjs
