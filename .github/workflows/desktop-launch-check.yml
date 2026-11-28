@@ -6,7 +6,7 @@ name: Desktop launch check (TinyCloud One)
 #
 # A separate job on purpose: the sign job holds the signing identity and runs no project code, and this job runs the app
 # that was built from the project. It has no environment, references no secret, and its token reads contents only. The
-# app starts signed out; nothing signs in and nothing is sent anywhere by this job. One short macOS job: about two
+# app starts signed out; nothing signs in and the check sends nothing. One short macOS job: about two
 # minutes on top of the build, and it runs only for releases, not for pull request CI.
 
 on:
