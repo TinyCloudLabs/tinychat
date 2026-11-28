@@ -1,5 +1,9 @@
 # exo-desktop
 
+## 0.22.13
+
+No changes in this release.
+
 ## 0.22.13-beta.1
 
 No changes in this release.
