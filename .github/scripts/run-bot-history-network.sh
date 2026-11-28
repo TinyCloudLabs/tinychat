@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the Main, sibling, and legacy bot-history suites against an isolated TinyCloud node. Details: TC-3968
+# Runs the Main, sibling, legacy, and revoke bot-history suites against an isolated TinyCloud node. Details: TC-3968
 set -euo pipefail
 
 image=ghcr.io/tinycloudlabs/tinycloud-node:1.26.22@sha256:03ea20ea9136b47cf6cf1f6b05ebae262dadda297d23d568c98fccf9c86f0c62
@@ -62,9 +62,9 @@ echo "TinyCloud node ready at $host"
 
 cd backend
 status=0
-for suite in bot-history-network.test.ts bot-history-siblings-network.test.ts bot-history-legacy-network.test.ts; do
+for suite in bot-history-network.test.ts bot-history-siblings-network.test.ts bot-history-legacy-network.test.ts bot-history-revoke-network.test.ts; do
   log="$run/$suite.log"
-  if ! env -i PATH="$PATH" HOME="$run/home" TMPDIR="$run/tmp" BOT_HISTORY_TEST_NODE="$host" \
+  if ! env -i PATH="$PATH" HOME="$run/home" TMPDIR="$run/tmp" BOT_HISTORY_TEST_NODE="$host" BOT_REVOKE_TEST_NODE="$host" \
     bun --no-env-file test "./src/__tests__/$suite" 2>&1 | tee "$log"; then
     status=1
   elif grep -Eq '^ *[1-9][0-9]* skip' "$log" || ! grep -Eq '^ *[1-9][0-9]* pass' "$log"; then

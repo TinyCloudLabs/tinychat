@@ -129,7 +129,7 @@ jobs:
         # VECTOR_BIN runs the request-record test through the real shipper pipeline (TC-2537).
         env:
           VECTOR_BIN: ${{ runner.temp }}/vector-x86_64-unknown-linux-gnu/bin/vector
-        run: bun run --cwd backend test --path-ignore-patterns '**/bot-history{,-siblings,-legacy}-network.test.ts'
+        run: bun run --cwd backend test --path-ignore-patterns '**/bot-history{,-siblings,-legacy,-revoke}-network.test.ts'
 
       - name: Vector config (log-shipper, pinned image)
         if: steps.relevance.outputs.relevant == 'true'
