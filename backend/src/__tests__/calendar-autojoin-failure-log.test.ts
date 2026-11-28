@@ -59,7 +59,9 @@ describe("TC-4461 failed-meeting reason", () => {
         { ...base, reason: "sent", code: "bot_removed" },
         { ...base, reason: "not_accepted", invite_hash: "112233445566", code: "bot_removed" },
       ];
-      const input = events.map(event => JSON.stringify({ "_tc.logship": "tinychat-backend", level: 6,
+      // Near misses and values of the wrong type must be dropped, not coerced.
+      const nearMisses: unknown[] = ["BOT_REMOVED", "bot_removed\n", " bot_removed", 42, ["bot_removed"], { code: "bot_removed" }, true, null];
+      const input = [...events, ...nearMisses.map(code => ({ ...base, reason: "failed", code }))].map(event => JSON.stringify({ "_tc.logship": "tinychat-backend", level: 6,
         message: JSON.stringify({ ...event, message: "PRIVATE_MESSAGE_CANARY", meeting_hash: "0123456789ab", meeting_id: "mtg_PRIVATE" }) })).join("\n") + "\n";
       const proc = Bun.spawn([process.env.VECTOR_BIN!, "--quiet", "--config", path], {
         env: { PATH: process.env.PATH ?? "", HOME: scratch, TC_HOME: scratch, VECTOR_LOG: "error" },
@@ -70,15 +72,18 @@ describe("TC-4461 failed-meeting reason", () => {
       expect(await proc.exited, err).toBe(0);
       const rows = out.split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
         .filter(row => row.event === "calendar_autojoin_decision");
-      expect(rows).toHaveLength(4);
+      expect(rows).toHaveLength(4 + nearMisses.length);
       // Separate lanes can reorder events, so rows are found by content.
       const failed = rows.find(row => row.reason === "failed" && row.code === "bot_removed");
-      const hostile = rows.find(row => row.reason === "failed" && row.code !== "bot_removed")!;
+      const hostile = rows.filter(row => row.reason === "failed" && row.code !== "bot_removed");
+      expect(hostile).toHaveLength(1 + nearMisses.length);
       const sent = rows.find(row => row.reason === "sent")!;
       const invite = rows.find(row => row.reason === "not_accepted")!;
       expect(failed).toMatchObject({ reason: "failed", code: "bot_removed" });
-      expect(hostile).toMatchObject({ reason: "failed" });
-      expect(hostile).not.toHaveProperty("code");
+      for (const row of hostile) {
+        expect(row).toMatchObject({ reason: "failed" });
+        expect(row).not.toHaveProperty("code");
+      }
       expect(sent).toMatchObject({ reason: "sent" });
       expect(sent).not.toHaveProperty("code");
       expect(invite).toMatchObject({ reason: "not_accepted", invite_hash: "112233445566" });
