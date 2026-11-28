@@ -14,6 +14,7 @@ import { BotHistory, HISTORY_PREFIX, historyBotId } from "../bot-history";
 import { projectBotHistoryGrant } from "../bot-history-grant";
 import { emptyLocationRegistry } from "./helpers/empty-location-registry.js";
 import { loopbackOnly } from "./helpers/loopback-only.js";
+import { backendHistoryFixtureManifest } from "./helpers/transcript-grant";
 
 const host = process.env.BOT_REVOKE_TEST_NODE;
 const KEY_A = "ab".repeat(16);
@@ -51,7 +52,7 @@ test.skipIf(!host)("real TinyCloud: the holder of a bot's history grant revokes 
   const address = privateKeyToAccount(ownerKey).address;
   const owner = new TinyCloudNode({ privateKey: ownerKey, host, prefix: "applications", autoCreateSpace: true, autoBootstrapAccount: false, includeAccountRegistryPermissions: false,
     manifest: webSignInManifest(WEB_APP_MANIFEST, [], address), tinycloudRegistryUrl: registry.url });
-  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-revoke-test", includeAccountRegistryPermissions: false, tinycloudRegistryUrl: registry.url });
+  const backend = new TinyCloudNode({ privateKey: backendKey, host, prefix: "bot-history-revoke-test", includeAccountRegistryPermissions: false, manifest: backendHistoryFixtureManifest, tinycloudRegistryUrl: registry.url });
   const directory = `${HISTORY_PREFIX}${historyBotId(address, KEY_A)}/`;
   const report: string[] = [];
   try {

@@ -110,7 +110,9 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     expect((envelope as { v?: number; keyPath?: string })).toMatchObject({ v: 2, keyPath: BOT_HISTORY_KEY_PATH });
     await expect(backend.keys.decrypt(envelope)).rejects.toThrow();
     const opened = await owner.keys.decrypt(envelope);
-    expect(JSON.parse(new TextDecoder().decode(opened))).toEqual(batch);
+    const { ctx, ...record } = JSON.parse(new TextDecoder().decode(opened));
+    expect(record).toEqual(batch);
+    expect(ctx).toMatchObject({ v: 1, bot: "main", generation: batch.generation, seq: batch.seq, challenge: batch.challenge, path });
     // Create-only is a real node precondition, not just random ID uniqueness.
     const overwrite = await access.kv.put(path, { overwritten: true }, { prefix: "", ifNoneMatch: "*" });
     expect(overwrite.ok).toBe(false);
@@ -124,7 +126,9 @@ test.skipIf(!host)("real TinyCloud: encrypted archival, KV-only backend decrypt 
     expect(rotated.session!.verificationMethod).not.toBe(oldSession);
     await grantFrom(rotated);
     const reopened = await rotated.keys.decrypt(envelope);
-    expect(JSON.parse(new TextDecoder().decode(reopened))).toEqual(batch);
+    const { ctx: reopenedCtx, ...reopenedRecord } = JSON.parse(new TextDecoder().decode(reopened));
+    expect(reopenedRecord).toEqual(batch);
+    expect(reopenedCtx).toEqual(ctx);
     // Public backend message route -> supervisor journal -> real owner TinyCloud -> verified retention barrier.
     const listeners = new Set<(frame: Frame) => void>();
     const exited = Promise.withResolvers<void>();
