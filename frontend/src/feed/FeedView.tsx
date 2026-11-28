@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type JSX, type ReactNode } from "react";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { CardBody, cardClass, CardTextContext, cardTime, chipClass, COMMENT_COPY, focusRing, quietClass } from "./cardKit";
 import { MessageCircleIcon } from "lucide-react";
 import { homeFeedSourceFor } from "./feedStore";
 import { HomeFeedEntries } from "./HomeFeedEntries";
 import { FinishSetupBanner } from "./FinishSetupBanner";
+import { FailedRecordingBanner } from "./FailedRecordingBanner";
 import { useFeedCardLink, type FeedCardLink } from "./feedCardLink";
 import type { HomeFeedSource } from "./feedStoreTypes";
 import { safeUrl, selectFeed, type FeedCard } from "./feedData";
@@ -354,7 +355,7 @@ export function FeedViewEntries({ realEntries, source, ask, linked, finishSetup 
   </>;
 }
 
-export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onReconnect?: () => void }): JSX.Element {
+export function FeedView({ tcw, onReconnect, calendar }: { tcw: TinyCloudWeb | null; onReconnect?: () => void; calendar?: ComponentProps<typeof FailedRecordingBanner>["calendar"] }): JSX.Element {
   const source = useMemo(() => tcw ? homeFeedSourceFor(tcw) : null, [tcw]);
   const linked = useFeedCardLink();
   // Agents connected since the last run get the owner's card.md the first time the Feed sees them, and a copy that
@@ -371,6 +372,6 @@ export function FeedView({ tcw, onReconnect }: { tcw: TinyCloudWeb | null; onRec
     return source.subscribe(sync);
   }, [tcw, source]);
   return source
-    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<Suspense fallback={null}><HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} /></Suspense>} finishSetup={<FinishSetupBanner tcw={tcw} />} />
+    ? <FeedViewEntries key={`${tcw?.did}:${tcw?.spaceId}`} realEntries={[]} source={source} linked={linked} ask={<Suspense fallback={null}><HomeAskBox tcw={tcw ?? undefined} onReconnect={onReconnect} /></Suspense>} finishSetup={<>{calendar && <FailedRecordingBanner calendar={calendar} subject={tcw?.did} />}<FinishSetupBanner tcw={tcw} /></>} />
     : <main aria-label="Feed" className="p-6 text-sm text-muted-foreground">Sign in to load your feed.</main>;
 }

@@ -97,6 +97,7 @@ import { bindNativeShares } from "./lib/nativeShares/receivedShares";
 import { isShareLinkPath } from "./lib/nativeShares/link";
 import { ShareLinkSurface } from "./capture/share/ShareLinkSurface";
 import { historyPrefetch } from "./lib/historyPrefetch";
+import { createCalendarAutojoinClient } from "./lib/connectors/calendarAutojoinApi";
 import { noteScreen } from "./lib/localFirst/requestLanes";
 import {
   createBillingClient,
@@ -568,6 +569,8 @@ export function App() {
   const billingRef = useRef<BillingClient>(
     createBillingClient(BACKEND_URL, sessionStoreRef.current),
   );
+  // TC-4461: Home's notice for a failed calendar recording reads the same status as Settings.
+  const calendarRef = useRef(createCalendarAutojoinClient(BACKEND_URL, sessionStoreRef.current));
   const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null);
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
   // A1 — refs mirror the config-fetch policy inputs so the trigger callbacks
@@ -1769,7 +1772,7 @@ export function App() {
                 backendUrl={BACKEND_URL}
                 sessionStore={sessionStoreRef.current}
               /></HomeFeatureGate>}
-              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} />}
+              feed={LOCAL_VALIDATION ? null : <FeedView tcw={tcw} onReconnect={authAction} calendar={calendarRef.current} />}
               apps={LOCAL_VALIDATION ? null : ONE_ADD_APP_ENABLED && screen.id === "addApp"
                 ? <AddAppPage />
                 : ONE_NAV_ENABLED && screen.appId
