@@ -1,0 +1,13 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.13",
+    "@tinychat/frontend": "0.22.13",
+    "@tinychat/backend": "0.14.10"
+  },
+  "changesets": [
+    ".changeset/pre/desktop-launch-check.md",
+    ".changeset/pre/tc-3968-bot-history-ci.md",
+    ".changeset/pre/tc-4461-failed-join-reason.md",
+    ".changeset/pre/tc-4461-home-failed-recording-notice.md"
+  ]
+}
