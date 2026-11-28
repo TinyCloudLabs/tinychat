@@ -1,6 +1,6 @@
 {
   "name": "exo-desktop",
-  "version": "0.22.14-beta.0",
+  "version": "0.22.14",
   "private": true,
   "type": "module",
   "scripts": {
