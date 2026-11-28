@@ -16,6 +16,14 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.22.13-beta.1
+
+### Patch Changes
+
+- f11fd5c: Home shows a dismissible notice when a calendar auto-join recording from the last day did not finish. It names the most recent meeting and the reason in plain words, and one Dismiss hides every recording it counts. Dismissals are kept per account on the device. A status read that fails changes nothing.
+
+  Details: TC-4461
+
 ## 0.22.13-beta.0
 
 ### Patch Changes
