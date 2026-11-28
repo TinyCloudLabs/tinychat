@@ -1,0 +1,79 @@
+name: Desktop launch check (TinyCloud One)
+
+# TC-4459. Called by desktop-release.yml between the build (signed and notarized when the plan says so) and the publish:
+# opens the built .app on a macOS runner and fails the release unless it starts, shows its window and renders its
+# bundled page with the release's version line (scripts/release/desktop-launch-check.sh).
+#
+# A separate job on purpose: the sign job holds the signing identity and runs no project code, and this job runs the app
+# that was built from the project. It has no environment, references no secret, and its token reads contents only. The
+# app starts signed out; nothing signs in and nothing is sent anywhere by this job. One short macOS job: about two
+# minutes on top of the build, and it runs only for releases, not for pull request CI.
+
+on:
+  workflow_call:
+    inputs:
+      artifact-name:
+        description: Workflow artifact that holds the built .app.zip
+        type: string
+        required: true
+      version:
+        description: desktop/package.json version that was built
+        type: string
+        required: true
+      bundle-version:
+        description: CFBundleVersion of the built app
+        type: string
+        required: true
+      signed:
+        description: The build is Developer ID signed and notarized
+        type: boolean
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    name: Launch the built app (macOS)
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      # The only checkout: the release tooling from the workflow's own commit.
+      - name: Check out the release tooling
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: |
+            /scripts/release/
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the built app
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/exo-build
+
+      - name: Launch the app and read its page
+        env:
+          VERSION: ${{ inputs.version }}
+          BUNDLE_VERSION: ${{ inputs.bundle-version }}
+          SIGNED: ${{ inputs.signed && 'signed' || 'unsigned' }}
+        run: |
+          mapfile -t zips < <(find "$RUNNER_TEMP/exo-build" -name '*.app.zip')
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "::error::Expected one .app.zip, found: ${zips[*]}"
+            exit 1
+          fi
+          scripts/release/desktop-launch-check.sh "${zips[0]}" "$VERSION" "$BUNDLE_VERSION" "$SIGNED" "$RUNNER_TEMP/exo-launch"
+
+      # The screenshot is the app's signed-out start page on a fresh runner.
+      - name: Keep the screenshot and the screen reading
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact-name }}-launch-check
+          path: |
+            ${{ runner.temp }}/exo-launch/screen.png
+            ${{ runner.temp }}/exo-launch/observed.txt
+          if-no-files-found: ignore

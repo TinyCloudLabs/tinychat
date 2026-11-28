@@ -57,3 +57,6 @@ jobs:
 
       - name: Release security gate tests (require-green, artifact audit)
         run: node --test scripts/__tests__/security-gates.test.mjs
+
+      - name: Desktop launch check tests
+        run: node --test scripts/__tests__/desktop-launch-check.test.mjs
