@@ -9,6 +9,8 @@ export const FAILED_RECORDING_WINDOW_MS = 24 * 60 * 60_000;
 export const FAILED_RECORDING_POLL_MS = 10 * 60_000;
 /** The status lists at most 30 outcomes, so a longer dismissed list would only hold ids that can no longer appear. */
 const DISMISSED_CAP = 60;
+/** A longer event title is cut, so the reason line keeps its place on a phone. */
+export const FAILED_RECORDING_TITLE_MAX = 32;
 
 export const FAILED_RECORDING_COPY = {
   leadOne: "A meeting recording did not finish",
@@ -42,7 +44,8 @@ export interface FailedRecordingCard {
 export function failedRecordingCard(failed: readonly CalendarAutojoinOutcome[]): FailedRecordingCard | null {
   const latest = failed[0];
   if (!latest) return null;
-  const title = latest.title?.trim() || FAILED_RECORDING_COPY.untitled;
+  const full = latest.title?.trim() || FAILED_RECORDING_COPY.untitled;
+  const title = [...full].length > FAILED_RECORDING_TITLE_MAX ? `${[...full].slice(0, FAILED_RECORDING_TITLE_MAX - 1).join("").trimEnd()}…` : full;
   const many = failed.length > 1;
   return {
     lead: many ? FAILED_RECORDING_COPY.leadMany(failed.length) : FAILED_RECORDING_COPY.leadOne,

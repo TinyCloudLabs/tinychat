@@ -56,7 +56,7 @@ export function FailedRecordingBanner({ calendar, subject, dismissals = failedRe
       <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
       <div className="min-w-0">
         <p className="font-semibold">{card.lead}</p>
-        <p className="min-w-0">{card.prefix}<span className="inline-block max-w-[12rem] truncate align-bottom">{card.title}</span>: {card.reason}</p>
+        <p className="min-w-0">{card.prefix}{card.title}: {card.reason}</p>
         <button type="button" aria-label={card.dismissLabel} onClick={() => dismissals.write(subject, card.ids)} className="mt-2 min-h-11 underline">{FAILED_RECORDING_COPY.dismiss}</button>
       </div>
     </div>

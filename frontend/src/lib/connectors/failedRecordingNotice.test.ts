@@ -48,6 +48,14 @@ describe("TC-4461 the card's words", () => {
     expect(failedRecordingCard([outcome("a", { title: undefined })])!.title).toBe("Untitled meeting");
   });
 
+  test("a long title is cut to one short line, in the card and in the Dismiss name", () => {
+    const card = failedRecordingCard([outcome("a", { title: "Weekly product sync with the whole design and engineering team" })])!;
+    expect(card.title).toBe("Weekly product sync with the wh…");
+    expect([...card.title]).toHaveLength(32);
+    expect(card.dismissLabel).toBe("Dismiss notice about Weekly product sync with the wh…");
+    expect(failedRecordingCard([outcome("a", { title: "x".repeat(32) })])!.title).toBe("x".repeat(32));
+  });
+
   test("no failed recording, no card", () => {
     expect(failedRecordingCard([])).toBeNull();
   });
