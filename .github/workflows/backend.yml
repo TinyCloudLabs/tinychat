@@ -65,6 +65,8 @@ jobs:
                 # bots/src/*: backend/src/__tests__/bot-admission-message-bot.test.ts runs the bots service's code against the backend's admission route.
                 # (This includes bots/src/tool-policy.ts: backend/src/__tests__/bots-service-routes.test.ts reads the never-list from it.)
                 backend/* | bots/src/* | bots/bun.lock | packages/* | patches/* | package.json | bun.lock | turbo.json \
+                | bots/package.json | frontend/src/bots/* | frontend/src/lib/homeFeatures.ts | frontend/src/lib/webSignInPrefetch.ts \
+                | frontend/src/lib/connectors/encryptionGrant.ts | manifest.json \
                 | docker-compose*.yml | log-shipper/* | .github/scripts/* | .github/deploy-tools/* \
                 | .github/workflows/deploy-backend-phala.yml | .github/workflows/backend.yml | scripts/home-feed/* \
                 | scripts/agent-sync/*)
@@ -101,6 +103,11 @@ jobs:
         if: steps.relevance.outputs.relevant == 'true'
         run: bun run --cwd backend build
 
+      - name: Bot history network tests (real TinyCloud node)
+        if: steps.relevance.outputs.relevant == 'true'
+        timeout-minutes: 6
+        run: .github/scripts/run-bot-history-network.sh
+
       - name: Package tests (core, client, server incl. node-sdk renewal)
         if: steps.relevance.outputs.relevant == 'true'
         run: bun run test:packages
@@ -122,7 +129,7 @@ jobs:
         # VECTOR_BIN runs the request-record test through the real shipper pipeline (TC-2537).
         env:
           VECTOR_BIN: ${{ runner.temp }}/vector-x86_64-unknown-linux-gnu/bin/vector
-        run: bun run --cwd backend test
+        run: bun run --cwd backend test --path-ignore-patterns '**/bot-history{,-siblings,-legacy,-revoke}-network.test.ts'
 
       - name: Vector config (log-shipper, pinned image)
         if: steps.relevance.outputs.relevant == 'true'

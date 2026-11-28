@@ -41,6 +41,22 @@ export interface TranscriptionMeetingError {
   message: string;
 }
 
+/**
+ * The service's public error codes that can end a meeting as `failed` (its ErrorCode list). Request-level codes and
+ * `meeting_already_captured` (handled as `already_recorded`) are not failure reasons. Anything else maps to `other`,
+ * and the service's free-text message is never kept.
+ */
+export const MEETING_FAILURE_CODES = [
+  "invalid_meeting_url", "unsupported_platform", "meeting_not_found", "meeting_join_failed", "waiting_room_timeout",
+  "bot_removed", "meeting_ended", "capture_failed", "transcription_failed", "provider_timeout", "provider_unavailable",
+  "capacity_exhausted", "internal_error", "other",
+] as const;
+export type MeetingFailureCode = (typeof MEETING_FAILURE_CODES)[number];
+
+export function meetingFailureCode(error: Pick<TranscriptionMeetingError, "code"> | null | undefined): MeetingFailureCode {
+  return MEETING_FAILURE_CODES.find(code => code === error?.code) ?? "other";
+}
+
 export interface TranscriptionMeeting {
   id: string;
   object?: "meeting";

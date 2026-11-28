@@ -333,7 +333,7 @@ export const TranscriberView: FC<TranscriberViewProps> = ({
               {calendarOutcomes.map((outcome) => <li key={outcome.id}>
                 <span className="font-medium">{outcome.title || "Calendar meeting"}</span>
                 <span className="text-muted-foreground"> · {formatWhen(new Date(outcome.start).toISOString())}</span>
-                <p className="text-muted-foreground">{calendarOutcomeLabel(outcome.reason)}</p>
+                <p className="text-muted-foreground">{calendarOutcomeLabel(outcome.reason, outcome.failureCode)}</p>
               </li>)}
             </ul>
           </div>}
