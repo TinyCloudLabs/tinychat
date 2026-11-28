@@ -222,6 +222,9 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   `tenant_hash` is the prefix of the existing keyed monthly request pseudonym. A `sent` decision includes
   an ownership transition that goes straight to `stop_pending`; terminal outcomes are separate events.
   A changed occurrence identity is a new decision even if an older row has the same disposition.
+  A `failed` decision carries `code` (TC-4461), the transcription service's error code from the closed list in
+  `MEETING_FAILURE_CODES` (any other value is `other`). The service's message text is never stored or shipped. The same
+  code is kept on the occurrence and served as the status outcome's `failureCode`.
   `calendar_autojoin_connection` carries closed `state`, optional closed `code` and optional hash;
   it records committed state or error-code transitions. Unknown stored states, codes and dispositions
   map to `unknown`. No calendar title, email, URL, token or provider text ships.

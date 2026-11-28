@@ -3,6 +3,7 @@ import { CalendarAutojoinWorker, type CalendarAutojoinWorkerOptions } from "../s
 import { CalendarAutojoinConnection, CalendarAutojoinError } from "../services/calendar-autojoin-connection.js";
 import { MemoryCalendarAutojoinStore, TenantCoordinator, type CalendarConnection, type CalendarOccurrence } from "../services/calendar-autojoin-store.js";
 import { calendarOccurrenceIdentity, eligibleCalendarEvent, ExternalOperationLimiter, GoogleCalendarError, type GoogleCalendarEvent, type GoogleCalendarPort } from "../services/google-calendar.js";
+import { calendarAutojoinOutcomes } from "../services/calendar-autojoin-status-summary.js";
 import { MemoryTranscriberIndexStore } from "../services/transcriber-index.js";
 import { computeCreateRequestHash, TranscriptionApiError, type CreateMeetingInput, type TranscriptionApiClient, type TranscriptionMeeting } from "../services/transcription-api.js";
 
@@ -1042,6 +1043,30 @@ describe("TC-907 ptx capacity_exhausted", () => {
     await f.worker().tick();
     expect(await f.row()).toMatchObject({ phase: "terminal", disposition: "failed" });
     expect(wakes).toEqual([]);
+  });
+
+  test("TC-4461: a failed meeting keeps the service's closed error code, never its message, and the status outcome serves it", async () => {
+    const f = await fixture();
+    await f.worker().tick();
+    Object.assign(f.records.get(f.posts[0]!.key)!, { status: "failed",
+      error: { type: "meeting_join_failed", code: "waiting_room_timeout", message: "PRIVATE_MESSAGE_CANARY" } });
+    f.advance(60_000);
+    await f.worker().tick();
+    const row = (await f.row())!;
+    expect(row).toMatchObject({ phase: "terminal", disposition: "failed", failureCode: "waiting_room_timeout" });
+    expect(JSON.stringify(row)).not.toContain("PRIVATE_MESSAGE_CANARY");
+    expect(calendarAutojoinOutcomes([row])).toEqual([expect.objectContaining({ reason: "failed", failureCode: "waiting_room_timeout" })]);
+  });
+
+  test("TC-4461: a failed meeting with an unlisted or missing error code is recorded as other", async () => {
+    for (const error of [{ type: "x", code: "brand_new_code", message: "m" }, undefined]) {
+      const f = await fixture();
+      await f.worker().tick();
+      Object.assign(f.records.get(f.posts[0]!.key)!, { status: "failed", error });
+      f.advance(60_000);
+      await f.worker().tick();
+      expect(await f.row()).toMatchObject({ disposition: "failed", failureCode: "other" });
+    }
   });
 
   test("a failure before any POST is sent still grows the backoff", async () => {

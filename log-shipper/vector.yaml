@@ -181,6 +181,8 @@ transforms:
             out.start = start
             tenant_hash = string(j.tenant_hash) ?? ""
             if match(tenant_hash, r'^[0-9a-f]{12}$') { out.tenant_hash = tenant_hash }
+            failure_code = string(j.code) ?? ""
+            if reason == "failed" && includes(["invalid_meeting_url", "unsupported_platform", "meeting_not_found", "meeting_join_failed", "waiting_room_timeout", "bot_removed", "meeting_ended", "capture_failed", "transcription_failed", "provider_timeout", "provider_unavailable", "capacity_exhausted", "internal_error", "other"], failure_code) { out.code = failure_code }
           }
         } else if name == "calendar_autojoin_connection" {
           state = string(j.state) ?? ""

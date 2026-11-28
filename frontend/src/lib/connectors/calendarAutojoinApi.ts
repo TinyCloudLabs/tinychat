@@ -1,8 +1,14 @@
 import type { SessionStore } from "@tinyboilerplate/client";
 
 export const CALENDAR_AUTOJOIN_PATH = "/api/connectors/google/autojoin";
+/** The notetaker service's reason for a failed recording; a value this app does not know is `other`. */
+export type CalendarFailureCode = "invalid_meeting_url" | "unsupported_platform" | "meeting_not_found" | "meeting_join_failed"
+  | "waiting_room_timeout" | "bot_removed" | "meeting_ended" | "capture_failed" | "transcription_failed" | "provider_timeout"
+  | "provider_unavailable" | "capacity_exhausted" | "internal_error" | "other";
 export interface CalendarAutojoinOutcome {
   id: string; title?: string; start: number; reason: string; meetingId?: string;
+  /** Present only when `reason` is `failed` and the backend recorded why. */
+  failureCode?: CalendarFailureCode;
 }
 export type CalendarAutojoinOffReason = "user_disabled" | "google_account_changed" | "disconnected"
   | "needs_reconnect" | "invalid_grant" | "setup_expired" | "setup_pending" | "never_enabled" | "unknown";
@@ -56,7 +62,20 @@ export function createCalendarAutojoinClient(backendUrl: string, sessionStore: S
   };
 }
 
-export function calendarOutcomeLabel(reason: string): string {
+function calendarFailureLabel(code: string | undefined): string {
+  switch (code) {
+    case "meeting_join_failed": return "The notetaker could not join this meeting.";
+    case "waiting_room_timeout": return "The notetaker was not admitted from the waiting room in time.";
+    case "bot_removed": return "The notetaker was removed from the meeting.";
+    case "meeting_ended": return "The meeting ended before a recording could be made.";
+    case "capture_failed": return "The notetaker could not record this meeting.";
+    case "transcription_failed": return "The recording was captured but a transcript could not be made.";
+    case "invalid_meeting_url": case "unsupported_platform": case "meeting_not_found": return "The notetaker could not use this meeting link.";
+    default: return "The notetaker could not complete this recording.";
+  }
+}
+
+export function calendarOutcomeLabel(reason: string, failureCode?: string): string {
   switch (reason) {
     case "not_accepted": return "Accept the invite to have the notetaker join";
     case "missed": case "missed_window": case "expired": case "window_expired": return "The joining window passed before a bot could be sent.";
@@ -75,7 +94,8 @@ export function calendarOutcomeLabel(reason: string): string {
     case "create_rejected": return "The notetaker service could not accept this meeting.";
     // TC-907: ptx refused every create in the joining window because all its bots were in use.
     case "capacity_exhausted": return "All TinyCloud notetakers were busy when this meeting started.";
-    case "failed": case "create_failed": case "recording_failed": return "The notetaker could not complete this recording.";
+    case "failed": return calendarFailureLabel(failureCode);
+    case "create_failed": case "recording_failed": return "The notetaker could not complete this recording.";
     // TC-581: another account's calendar bot is already capturing this meeting.
     case "shared_capture_pending": return "Already being recorded by another TinyCloud account. If you accepted that account's calendar invite, the transcript will be added to your meetings after it ends.";
     case "capture_in_progress": return "Already being recorded by another TinyCloud account. Only one notetaker can join a meeting.";
