@@ -22,6 +22,11 @@ The skip inside Backend, Native ceiling and Frontend fails open: Backend and Nat
 `git diff base...head` succeeds and lists no relevant path; Frontend skips it only when its `changes` job succeeds and
 selects no frontend input. That keeps each job present on every PR, so it can be required.
 
+The backend check runs the Main, sibling, legacy and revoke bot-history network suites in separate Bun processes against a
+digest-pinned TinyCloud node on loopback. The node uses fresh local state and must advertise named-key support;
+all four suites must pass without skips. Run the same check locally with `.github/scripts/run-bot-history-network.sh`
+after installing the workspace and bots dependencies and building the workspace packages. Details: TC-3968
+
 ### Release gates (`.github/workflows/deploy-production.yml`, every deploy, rollbacks and hotfixes included)
 
 All of these run before anything changes in production; any failure deploys nothing.

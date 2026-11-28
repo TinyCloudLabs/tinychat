@@ -111,7 +111,9 @@ test.skipIf(!host)("real TinyCloud: a second bot has its own grant, directory an
     const sealed = stored.data.data as Parameters<typeof owner.keys.decrypt>[0];
     expect(JSON.stringify(sealed)).not.toContain("sibling record");
     const opened = await owner.keys.decrypt(sealed);
-    expect(JSON.parse(new TextDecoder().decode(opened))).toEqual(batch);
+    const { ctx, ...record } = JSON.parse(new TextDecoder().decode(opened));
+    expect(record).toEqual(batch);
+    expect(ctx).toMatchObject({ v: 1, bot: KEY_A, generation: batch.generation, seq: batch.seq, challenge: batch.challenge, path });
 
     // The node holds each grant to its own directory: A's cannot write Main's or B's, and Main's cannot write A's.
     const accessA = await backend.useDelegation(forA.delegation);
