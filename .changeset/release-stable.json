@@ -1,0 +1,9 @@
+{
+  "versions": {
+    "exo-desktop": "0.22.14",
+    "@tinychat/frontend": "0.22.14"
+  },
+  "changesets": [
+    ".changeset/pre/tc-4462-signout-background-work.md"
+  ]
+}
