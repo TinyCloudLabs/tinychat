@@ -115,9 +115,21 @@ jobs:
       artifact-name: exo-${{ needs.plan.outputs.version }}-macos-arm64
       sign: ${{ needs.plan.outputs.signing == 'required' }}
 
+  # The built app opens and renders its bundled page with this release's version line, or nothing is published
+  # (desktop-launch-check.yml, TC-4459). A separate no-secrets job: the sign job runs no project code.
+  launch:
+    name: Launch check
+    needs: [plan, build]
+    uses: ./.github/workflows/desktop-launch-check.yml
+    with:
+      artifact-name: exo-${{ needs.plan.outputs.version }}-macos-arm64
+      version: ${{ needs.build.outputs.version }}
+      bundle-version: ${{ needs.build.outputs.bundle-version }}
+      signed: ${{ needs.plan.outputs.signing == 'required' }}
+
   publish:
     name: Publish
-    needs: [plan, build]
+    needs: [plan, build, launch]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
