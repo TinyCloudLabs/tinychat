@@ -1,5 +1,6 @@
-import { emitToStdout, requestLogAccountHash, requestLogInviteHash } from "../request-context.js";
+import { emitToStdout, requestLogAccountHash, requestLogInviteHash, requestLogMeetingHash } from "../request-context.js";
 import type { CalendarConnection, CalendarOccurrence } from "./calendar-autojoin-store.js";
+import type { MeetingFailureCode } from "./transcription-api.js";
 
 const DECISIONS = [
   "sent", "completed", "failed", "cancelled", "missed", "missed_window", "not_accepted",
@@ -38,7 +39,7 @@ export interface CalendarScanCounts {
 export type CalendarAutojoinLogEvent =
   | ({ event: "calendar_autojoin_tick" } & CalendarTickCounts)
   | ({ event: "calendar_autojoin_scan" } & CalendarScanCounts)
-  | { event: "calendar_autojoin_decision"; reason: CalendarDecisionReason; start?: string; tenant_hash?: string; invite_hash?: string }
+  | { event: "calendar_autojoin_decision"; reason: CalendarDecisionReason; start?: string; tenant_hash?: string; invite_hash?: string; meeting_hash?: string; code?: MeetingFailureCode }
   | { event: "calendar_autojoin_connection"; state: CalendarConnection["state"] | "unknown"; code?: CalendarConnectionCode; tenant_hash?: string };
 
 function tenantHash(tenant: string): { tenant_hash: string } | object {
@@ -46,19 +47,26 @@ function tenantHash(tenant: string): { tenant_hash: string } | object {
   return hash ? { tenant_hash: hash.slice(0, 12) } : {};
 }
 
+function meetingHash(meetingId: string | undefined): { meeting_hash: string } | object {
+  const hash = meetingId ? requestLogMeetingHash(meetingId) : undefined;
+  return hash ? { meeting_hash: hash.slice(0, 12) } : {};
+}
+
 /**
  * Invitation decisions (not_accepted, event_ineligible) carry no start time and no account pseudonym: an outsider
  * picks an invitation's start, and the account pseudonym would link it to the tenant's other lines. They carry an
  * invite-only pseudonym instead, which links only to other invitation decisions. Every other decision carries the
- * occurrence start and, when the key is configured, the account pseudonym.
+ * occurrence start and, when the key is configured, the account pseudonym and, once a meeting exists, its pseudonym.
+ * A `failed` decision also carries the transcription service's closed failure code.
  */
-export function calendarDecisionEvent(row: Pick<CalendarOccurrence, "tenant" | "start">, reason: CalendarDecisionReason): CalendarAutojoinLogEvent & { event: "calendar_autojoin_decision" } {
+export function calendarDecisionEvent(row: Pick<CalendarOccurrence, "tenant" | "start"> & Partial<Pick<CalendarOccurrence, "meetingId" | "failureCode">>, reason: CalendarDecisionReason): CalendarAutojoinLogEvent & { event: "calendar_autojoin_decision" } {
   const closed = DECISIONS.includes(reason) ? reason : "unknown";
   if (closed === "not_accepted" || closed === "event_ineligible") {
     const invite = requestLogInviteHash(row.tenant);
     return { event: "calendar_autojoin_decision", reason: closed, ...(invite ? { invite_hash: invite.slice(0, 12) } : {}) };
   }
-  return { event: "calendar_autojoin_decision", reason: closed, start: new Date(row.start).toISOString(), ...tenantHash(row.tenant) };
+  return { event: "calendar_autojoin_decision", reason: closed, start: new Date(row.start).toISOString(), ...tenantHash(row.tenant),
+    ...meetingHash(row.meetingId), ...(closed === "failed" && row.failureCode ? { code: row.failureCode } : {}) };
 }
 
 export function calendarConnectionEvent(row: Pick<CalendarConnection, "tenant" | "state" | "errorCode">): CalendarAutojoinLogEvent & { event: "calendar_autojoin_connection" } {

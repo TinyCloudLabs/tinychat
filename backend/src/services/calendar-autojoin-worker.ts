@@ -11,8 +11,8 @@ import {
   GoogleCalendarError, inDispatchWindow, type GoogleCalendarEvent, type GoogleCalendarPort,
 } from "./google-calendar.js";
 import {
-  computeCreateRequestHash, TERMINAL_MEETING_STATUSES, TranscriptionApiError,
-  type TranscriptionApiClient, type TranscriptionMeeting, type TranscriptionMeetingStatus,
+  computeCreateRequestHash, meetingFailureCode, TERMINAL_MEETING_STATUSES, TranscriptionApiError,
+  type MeetingFailureCode, type TranscriptionApiClient, type TranscriptionMeeting, type TranscriptionMeetingStatus,
 } from "./transcription-api.js";
 import { CalendarAutojoinError } from "./calendar-autojoin-connection.js";
 import { GoogleOAuthError } from "./google-oauth.js";
@@ -659,7 +659,7 @@ export class CalendarAutojoinWorker {
       // TC-581 backstop: ptx found another bot from this service already in the call (a manual send,
       // or a race the claim map missed). Never share here: drop our own empty meeting.
       if (meeting.status === "failed" && meeting.error?.code === "meeting_already_captured") { await this.alreadyCaptured(row); return; }
-      await this.finish(row, meeting.status); return;
+      await this.finish(row, meeting.status, meeting.status === "failed" ? meetingFailureCode(meeting.error) : undefined); return;
     }
     // Reread stop intent: disable can have run during either upstream GET.
     row = (await store.getOccurrence(row.tenant, row.id))!;
@@ -676,12 +676,12 @@ export class CalendarAutojoinWorker {
       ...current, stopRequested: true, phase: current.meetingId && current.phase !== "ownership_pending" ? "stop_pending" : current.phase, errorCode: code, updatedAt: this.now(),
     });
   }
-  private async finish(row: CalendarOccurrence, disposition: string): Promise<void> {
+  private async finish(row: CalendarOccurrence, disposition: string, failureCode?: MeetingFailureCode): Promise<void> {
     if (row.meetingId || row.idempotencyKey || row.sharedCapture) await this.options.store.putMarker({ tenant: row.tenant, id: row.id, meetingId: row.meetingId, disposition });
     // Every code on a shared row (pending, unverified, a deferred retry) is superseded by its disposition.
     const clears = (current: CalendarOccurrence) => !!current.sharedCapture || (disposition === "completed" && !current.stopRequested)
       || disposition === "already_recorded" || disposition === "capacity_exhausted";
-    await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: clears(current) ? undefined : current.errorCode });
+    await this.options.store.updateOccurrence(row.tenant, row.id, current => current && { ...current, phase: "terminal", disposition, createBody: undefined, requestHash: undefined, updatedAt: this.now(), errorCode: clears(current) ? undefined : current.errorCode, ...(failureCode ? { failureCode } : {}) });
     if (disposition === "completed" && row.meetingId) {
       await this.options.onRecordingCompleted?.(row.tenant, row.meetingId);
     }

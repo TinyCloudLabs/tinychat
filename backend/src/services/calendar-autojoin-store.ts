@@ -6,7 +6,7 @@ import {
 } from "./backend-storage-lane.js";
 import { normalizeGoogleMeetUrl } from "./google-calendar.js";
 import { calendarConnectionEvent, emitCalendarAutojoinEvent } from "./calendar-autojoin-log-events.js";
-import type { CreateMeetingInput } from "./transcription-api.js";
+import type { CreateMeetingInput, MeetingFailureCode } from "./transcription-api.js";
 import { CalendarAutojoinStatusCache, STATUS_CACHE_MAX_TENANTS, type CalendarAutojoinOffReason } from "./calendar-autojoin-status-cache.js";
 import { calendarAutojoinOutcomes, type CalendarAutojoinStatusSummary } from "./calendar-autojoin-status-summary.js";
 
@@ -106,6 +106,8 @@ export interface CalendarOccurrence {
   stopRequested: boolean;
   errorCode?: string;
   disposition?: string;
+  /** Why the transcription service ended the meeting `failed`: a closed code, never its free-text message. */
+  failureCode?: MeetingFailureCode;
   /** TC-907: the latest create was refused with 429 `capacity_exhausted`, so it created nothing. */
   capacityExhausted?: boolean;
   /** Never put the owner's meeting id in `meetingId`: getStatus returns that to the browser. */

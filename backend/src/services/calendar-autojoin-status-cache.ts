@@ -1,3 +1,5 @@
+import type { MeetingFailureCode } from "./transcription-api.js";
+
 export type CalendarAutojoinOffReason = "user_disabled" | "google_account_changed" | "disconnected"
   | "needs_reconnect" | "invalid_grant" | "setup_expired" | "setup_pending" | "never_enabled" | "unknown";
 
@@ -8,7 +10,7 @@ export interface CalendarAutojoinStatus {
   lastScanAt: number | null;
   lastDispatchLag: { sentAt: number; seconds: number; discovered: number } | null;
   errorCode: string | null;
-  outcomes: { id: string; title: string; start: number; reason: string; meetingId?: string }[];
+  outcomes: { id: string; title: string; start: number; reason: string; meetingId?: string; failureCode?: MeetingFailureCode }[];
 }
 
 export const STATUS_CACHE_MAX_TENANTS = 1_000;
