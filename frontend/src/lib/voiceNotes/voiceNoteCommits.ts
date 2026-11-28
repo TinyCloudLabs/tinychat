@@ -114,6 +114,14 @@ export async function readTranscriptCommits(tcw: Pick<TinyCloudWeb, "sql">, sour
   return commits;
 }
 
+/** The preview read was cut off because the session ended or was replaced; nothing is wrong with the data. */
+export class TranscriptPreviewsAbortedError extends Error {
+  constructor() {
+    super("Read transcript previews: Request was aborted.");
+    this.name = "TranscriptPreviewsAbortedError";
+  }
+}
+
 /** The committed transcripts' previews by recording id, one read: what a list titles a note by. */
 export async function readTranscriptPreviews(tcw: Pick<TinyCloudWeb, "sql">): Promise<Map<string, string>> {
   const previews = new Map<string, string>();
@@ -121,7 +129,10 @@ export async function readTranscriptPreviews(tcw: Pick<TinyCloudWeb, "sql">): Pr
   const result = await tcw.sql.db(CONNECTORS_SQL_DB_NAME).query(
     "SELECT source_id, preview FROM voice_note_transcript WHERE outcome = 'transcribed' AND preview IS NOT NULL AND preview != ''", [],
   );
-  if (!result.ok) throw new Error(`Read transcript previews: ${result.error.message}`);
+  if (!result.ok) {
+    if (result.error.code === "ABORTED") throw new TranscriptPreviewsAbortedError();
+    throw new Error(`Read transcript previews: ${result.error.message}`);
+  }
   for (const row of result.data.rows as unknown[][]) {
     if (typeof row[0] === "string" && typeof row[1] === "string") previews.set(row[0], row[1]);
   }

@@ -59,7 +59,7 @@ import { captureEngineKind } from "@/lib/voiceNotes/captureEngine";
 import { loadVoiceNoteAudioBlob, voiceNoteAudioKvKey, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { cachedSpaceAudio, cachedSpaceAudioOffline, hasVerifiedSpaceCopy, isMissingLocalAudio, isVerifiedSpaceReceipt, latestSpaceAudioIdentity, localPlaybackUrl,
   observeSpaceAudioIdentity } from "@/lib/voiceNotes/audioPlaybackCache";
-import { readTranscriptPreviews, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
+import { readTranscriptPreviews, TranscriptPreviewsAbortedError, voiceNoteTranscriptLocator, type TranscriptProvenance } from "@/lib/voiceNotes/voiceNoteCommits";
 import { accountCacheKey, readLocal, writeLocal } from "@/lib/localFirst/localCache";
 import { captureEvents } from "../captureEvents";
 import type { LibraryFilter } from "./libraryKinds";
@@ -343,7 +343,10 @@ export function useLibrary(
         try {
           previews = await readTranscriptPreviews(startedSpace);
         } catch (caught) {
-          console.error("Library: could not read transcript previews; voice notes without a moment keep the generic title", caught);
+          // Sign-out (or a replaced session) cuts the read off; the list keeps the previews it has.
+          if (!(caught instanceof TranscriptPreviewsAbortedError)) {
+            console.error("Library: could not read transcript previews; voice notes without a moment keep the generic title", caught);
+          }
         }
       }
       if (!stillCurrent()) return;
