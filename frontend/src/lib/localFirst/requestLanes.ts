@@ -118,7 +118,10 @@ function pump(): void {
   while (backgroundActive < BACKGROUND_CONCURRENCY && backgroundQueue.length > 0) {
     const next = backgroundQueue.shift() as QueuedWork;
     backgroundActive++;
-    void next.work().then(next.resolve, next.reject).finally(() => {
+    // Work that throws before it returns a promise (reading `tcw.sql` after sign-out does) settles like any other
+    // failure: to its caller, with the lane freed. A throw out of the pump would be an uncaught error and would leave
+    // `backgroundActive` counted for good, so no later background work could start.
+    void new Promise<unknown>((run) => { run(next.work()); }).then(next.resolve, next.reject).finally(() => {
       backgroundActive--;
       pump();
     });
