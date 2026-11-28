@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { load as loadYaml } from "js-yaml";
-import { configureRequestLogAccountHash, requestLogMeetingHash } from "../request-context.js";
+import { configureRequestLogAccountHash } from "../request-context.js";
 import { calendarDecisionEvent } from "../services/calendar-autojoin-log-events.js";
 import { MEETING_FAILURE_CODES, meetingFailureCode } from "../services/transcription-api.js";
 
@@ -21,32 +21,25 @@ describe("TC-4461 failed-meeting reason", () => {
     expect(meetingFailureCode(null)).toBe("other");
   });
 
-  test("a failed decision carries the closed code and a meeting pseudonym, never the meeting id", () => {
+  test("a failed decision carries the closed code and no meeting id", () => {
     configureRequestLogAccountHash("k".repeat(32));
-    const event = calendarDecisionEvent({ tenant: "0xabc", start: START, meetingId: "mtg_secret_id_123", failureCode: "bot_removed" }, "failed");
+    const event = calendarDecisionEvent({ tenant: "0xabc", start: START, meetingId: "mtg_secret_id_123", failureCode: "bot_removed" } as Parameters<typeof calendarDecisionEvent>[0], "failed");
     expect(event).toMatchObject({ reason: "failed", code: "bot_removed" });
-    expect(event.meeting_hash).toBe(requestLogMeetingHash("mtg_secret_id_123")!.slice(0, 12));
-    expect(event.meeting_hash).toMatch(/^[0-9a-f]{12}$/);
     expect(JSON.stringify(event)).not.toContain("mtg_secret_id_123");
     expect(JSON.stringify(event)).not.toContain("0xabc");
   });
 
-  test("the code is only on failed decisions; the pseudonym needs a key and a meeting; invitations carry neither", () => {
-    configureRequestLogAccountHash("k".repeat(32));
-    const row = { tenant: "0xabc", start: START, meetingId: "mtg_1", failureCode: "bot_removed" as const };
+  test("the code is only on failed decisions; invitations carry none", () => {
+    const row = { tenant: "0xabc", start: START, failureCode: "bot_removed" as const };
     expect(calendarDecisionEvent(row, "completed")).not.toHaveProperty("code");
-    expect(calendarDecisionEvent(row, "sent")).toHaveProperty("meeting_hash");
-    expect(calendarDecisionEvent({ tenant: "0xabc", start: START }, "failed")).not.toHaveProperty("meeting_hash");
+    expect(calendarDecisionEvent(row, "sent")).not.toHaveProperty("code");
+    expect(calendarDecisionEvent({ tenant: "0xabc", start: START }, "failed")).not.toHaveProperty("code");
     for (const reason of ["not_accepted", "event_ineligible"] as const) {
-      const invite = calendarDecisionEvent(row, reason);
-      expect(invite).not.toHaveProperty("meeting_hash");
-      expect(invite).not.toHaveProperty("code");
+      expect(calendarDecisionEvent(row, reason)).not.toHaveProperty("code");
     }
-    configureRequestLogAccountHash(undefined);
-    expect(calendarDecisionEvent(row, "failed")).not.toHaveProperty("meeting_hash");
   });
 
-  test.skipIf(!process.env.VECTOR_BIN)("Vector ships the closed code and the pseudonym and drops anything outside them", async () => {
+  test.skipIf(!process.env.VECTOR_BIN)("Vector ships the closed code and drops anything outside the list", async () => {
     const scratch = mkdtempSync("/var/tmp/tc4461-vector-");
     try {
       const shipped = loadYaml(await Bun.file(join(root, "log-shipper/vector.yaml")).text()) as {
@@ -61,13 +54,13 @@ describe("TC-4461 failed-meeting reason", () => {
       writeFileSync(path, JSON.stringify(config));
       const base = { event: "calendar_autojoin_decision", start: "2026-11-27T14:30:00.000Z", tenant_hash: "aabbccddeeff" };
       const events = [
-        { ...base, reason: "failed", code: "bot_removed", meeting_hash: "0123456789ab" },
-        { ...base, reason: "failed", code: "PRIVATE_CODE_CANARY", meeting_hash: "not-a-hash" },
-        { ...base, reason: "sent", code: "bot_removed", meeting_hash: "ba9876543210" },
-        { ...base, reason: "not_accepted", invite_hash: "112233445566", code: "bot_removed", meeting_hash: "0123456789ab" },
+        { ...base, reason: "failed", code: "bot_removed" },
+        { ...base, reason: "failed", code: "PRIVATE_CODE_CANARY" },
+        { ...base, reason: "sent", code: "bot_removed" },
+        { ...base, reason: "not_accepted", invite_hash: "112233445566", code: "bot_removed" },
       ];
       const input = events.map(event => JSON.stringify({ "_tc.logship": "tinychat-backend", level: 6,
-        message: JSON.stringify({ ...event, message: "PRIVATE_MESSAGE_CANARY" }) })).join("\n") + "\n";
+        message: JSON.stringify({ ...event, message: "PRIVATE_MESSAGE_CANARY", meeting_hash: "0123456789ab", meeting_id: "mtg_PRIVATE" }) })).join("\n") + "\n";
       const proc = Bun.spawn([process.env.VECTOR_BIN!, "--quiet", "--config", path], {
         env: { PATH: process.env.PATH ?? "", HOME: scratch, TC_HOME: scratch, VECTOR_LOG: "error" },
         stdin: new Blob([input]), stdout: "pipe", stderr: "pipe", timeout: 60_000,
@@ -83,16 +76,20 @@ describe("TC-4461 failed-meeting reason", () => {
       const hostile = rows.find(row => row.reason === "failed" && row.code !== "bot_removed")!;
       const sent = rows.find(row => row.reason === "sent")!;
       const invite = rows.find(row => row.reason === "not_accepted")!;
-      expect(failed).toMatchObject({ reason: "failed", code: "bot_removed", meeting_hash: "0123456789ab" });
+      expect(failed).toMatchObject({ reason: "failed", code: "bot_removed" });
       expect(hostile).toMatchObject({ reason: "failed" });
       expect(hostile).not.toHaveProperty("code");
-      expect(hostile).not.toHaveProperty("meeting_hash");
-      expect(sent).toMatchObject({ reason: "sent", meeting_hash: "ba9876543210" });
+      expect(sent).toMatchObject({ reason: "sent" });
       expect(sent).not.toHaveProperty("code");
       expect(invite).toMatchObject({ reason: "not_accepted", invite_hash: "112233445566" });
       expect(invite).not.toHaveProperty("code");
-      expect(invite).not.toHaveProperty("meeting_hash");
+      for (const row of rows) {
+        expect(row).not.toHaveProperty("meeting_hash");
+        expect(row).not.toHaveProperty("meeting_id");
+        expect(row).not.toHaveProperty("message");
+      }
       expect(out).not.toContain("CANARY");
+      expect(out).not.toContain("mtg_PRIVATE");
     } finally { rmSync(scratch, { recursive: true, force: true }); }
   }, 120_000);
 });

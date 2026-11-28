@@ -120,16 +120,6 @@ export function requestLogInviteHash(address: string, at: Date = new Date()): st
   return createHmac("sha256", accountHashKey).update(`calendar-invite\0${month}\0${address.toLowerCase()}`).digest("hex");
 }
 
-/** hex(HMAC-SHA256(key, "calendar-meeting\0" || UTC "YYYY-MM" of `at` || "\0" || transcription meeting id)): the same key under
- * its own label. It ties a meeting's decision lines together, differs from the account and invite pseudonyms, and the id
- * is recoverable only by someone who holds both the key and the id.
- */
-export function requestLogMeetingHash(meetingId: string, at: Date = new Date()): string | undefined {
-  if (!accountHashKey) return undefined;
-  const month = at.toISOString().slice(0, 7);
-  return createHmac("sha256", accountHashKey).update(`calendar-meeting\0${month}\0${meetingId}`).digest("hex");
-}
-
 /** The shipped record carries only the order of magnitude of a request's credits. */
 export function requestLogCreditsBucket(credits: number): CreditsBucket {
   // Anything that is not a finite count (NaN, ±Infinity) and any negative lands in "0", never in "1000+".
