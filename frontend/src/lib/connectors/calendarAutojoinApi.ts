@@ -65,10 +65,10 @@ export function createCalendarAutojoinClient(backendUrl: string, sessionStore: S
 function calendarFailureLabel(code: string | undefined): string {
   switch (code) {
     case "meeting_join_failed": return "The notetaker could not join this meeting.";
-    case "waiting_room_timeout": return "The notetaker was not let in from the waiting room.";
+    case "waiting_room_timeout": return "The notetaker was not admitted from the waiting room in time.";
     case "bot_removed": return "The notetaker was removed from the meeting.";
-    case "meeting_ended": return "The meeting ended before a recording could be captured.";
-    case "capture_failed": return "The notetaker joined but could not capture the recording.";
+    case "meeting_ended": return "The meeting ended before a recording could be made.";
+    case "capture_failed": return "The notetaker could not record this meeting.";
     case "transcription_failed": return "The recording was captured but a transcript could not be made.";
     case "invalid_meeting_url": case "unsupported_platform": case "meeting_not_found": return "The notetaker could not use this meeting link.";
     default: return "The notetaker could not complete this recording.";

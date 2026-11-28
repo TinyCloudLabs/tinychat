@@ -224,7 +224,7 @@ provider refusal can be read without public Phala logs. Same pattern as tinyclou
   A changed occurrence identity is a new decision even if an older row has the same disposition.
   Once a meeting exists, a non-invitation decision also carries `meeting_hash` (TC-4461): the 12-hex prefix of
   HMAC-SHA256 over the same key with the label `calendar-meeting`, the UTC month and the transcription meeting id. It ties a
-  meeting's `sent` and terminal lines together; the id cannot be read back from it. A `failed` decision carries `code`,
+  meeting's `sent` and terminal lines together; the id cannot be recovered from it without the log key. A `failed` decision carries `code`,
   the transcription service's error code from the closed list in `MEETING_FAILURE_CODES` (any other value is `other`).
   The service's message text is never stored or shipped. The same code is kept on the occurrence and served as the status
   outcome's `failureCode`.
