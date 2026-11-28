@@ -29,6 +29,15 @@ export function failedRecordingsToShow(outcomes: readonly CalendarAutojoinOutcom
     .sort((a, b) => b.start - a.start);
 }
 
+/** At most FAILED_RECORDING_TITLE_MAX characters including the ellipsis, cut at the last space when one falls in the second half. */
+function cutTitle(full: string): string {
+  const chars = [...full];
+  if (chars.length <= FAILED_RECORDING_TITLE_MAX) return full;
+  const head = chars.slice(0, FAILED_RECORDING_TITLE_MAX - 1).join("");
+  const space = head.lastIndexOf(" ");
+  return `${(space >= FAILED_RECORDING_TITLE_MAX / 2 ? head.slice(0, space) : head).trimEnd()}…`;
+}
+
 export interface FailedRecordingCard {
   lead: string;
   /** "Most recent, " on a card that counts several recordings, otherwise empty. */
@@ -45,7 +54,7 @@ export function failedRecordingCard(failed: readonly CalendarAutojoinOutcome[]):
   const latest = failed[0];
   if (!latest) return null;
   const full = latest.title?.trim() || FAILED_RECORDING_COPY.untitled;
-  const title = [...full].length > FAILED_RECORDING_TITLE_MAX ? `${[...full].slice(0, FAILED_RECORDING_TITLE_MAX - 1).join("").trimEnd()}…` : full;
+  const title = cutTitle(full);
   const many = failed.length > 1;
   return {
     lead: many ? FAILED_RECORDING_COPY.leadMany(failed.length) : FAILED_RECORDING_COPY.leadOne,

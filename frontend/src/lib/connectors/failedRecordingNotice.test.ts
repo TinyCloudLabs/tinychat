@@ -50,9 +50,11 @@ describe("TC-4461 the card's words", () => {
 
   test("a long title is cut to one short line, in the card and in the Dismiss name", () => {
     const card = failedRecordingCard([outcome("a", { title: "Weekly product sync with the whole design and engineering team" })])!;
-    expect(card.title).toBe("Weekly product sync with the wh…");
-    expect([...card.title]).toHaveLength(32);
-    expect(card.dismissLabel).toBe("Dismiss notice about Weekly product sync with the wh…");
+    expect(card.title).toBe("Weekly product sync with the…");
+    expect(card.dismissLabel).toBe("Dismiss notice about Weekly product sync with the…");
+    const unbroken = failedRecordingCard([outcome("a", { title: "x".repeat(60) })])!.title;
+    expect(unbroken).toBe(`${"x".repeat(31)}…`);
+    expect([...unbroken]).toHaveLength(32);
     expect(failedRecordingCard([outcome("a", { title: "x".repeat(32) })])!.title).toBe("x".repeat(32));
   });
 
