@@ -4,8 +4,10 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ASK_STRINGS } from "./askStrings";
 import { BotsRouteMissing } from "./botsApi";
-import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS } from "./botsStrings";
+import { FEED_CHATS_ACCESS_STRINGS, MEETINGS_ACCESS_STRINGS, TELEGRAM_ACCESS_STRINGS } from "./botsStrings";
+import { ChatReadAccess } from "./ChatReadAccess";
 import type { ReadArea } from "./trustbotReadAreas";
 import { changeReadArea, type ReadAreaApi, type ReadSettings } from "./trustbotReadGrant";
 
@@ -37,18 +39,37 @@ function Confirm({ copy: COPY, onConfirm, onCancel, busy }: { copy: AccessCopy; 
   );
 }
 
-export function MeetingsAccess({ api }: { api: MeetingsAccessApi }) {
-  return <ReadAreaAccess api={api} area="meetings" copy={MEETINGS_ACCESS_STRINGS} />;
+/**
+ * `onChanged` hears of a change the owner made here, with the stored settings. In a card in the conversation the section
+ * offers `onNotNow` beside its button and leaves out the list of chats (`chatList={false}`).
+ */
+interface AccessProps {
+  api: MeetingsAccessApi;
+  onSettings?: (settings: ReadSettings) => void;
+  onChanged?: (settings: ReadSettings) => void;
+  onNotNow?: () => void;
+  chatList?: boolean;
 }
 
-export function FeedChatsAccess({ api }: { api: MeetingsAccessApi }) {
-  return <ReadAreaAccess api={api} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
+export function MeetingsAccess(props: AccessProps) {
+  return <ReadAreaAccess {...props} area="meetings" copy={MEETINGS_ACCESS_STRINGS} />;
+}
+
+export function FeedChatsAccess(props: AccessProps) {
+  return <ReadAreaAccess {...props} area="feed_chats" copy={FEED_CHATS_ACCESS_STRINGS} />;
+}
+
+export function TelegramAccess(props: Omit<AccessProps, "onSettings">) {
+  return <ReadAreaAccess {...props} area="telegram" copy={TELEGRAM_ACCESS_STRINGS} />;
 }
 
 /** Renders nothing while loading and when the service answers 404 (the feature is not on for this account). */
-function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessApi; area: ReadArea; copy: AccessCopy }) {
+function ReadAreaAccess({ api, area: AREA, copy: COPY, onSettings, onChanged, onNotNow, chatList = true }: AccessProps & {
+  area: ReadArea; copy: AccessCopy;
+}) {
   const id = useId();
   const [saved, setSaved] = useState<ReadSettings | null>(null);
+  const [loadedApi, setLoadedApi] = useState<MeetingsAccessApi | null>(null);
   const [missing, setMissing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -62,7 +83,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   useEffect(() => {
     let current = true;
     api.readSettings().then(
-      (settings) => { if (current) setSaved(settings); },
+      (settings) => { if (current) { setSaved(settings); setLoadedApi(api); onSettings?.(settings); } },
       (error: unknown) => {
         if (!current) return;
         if (error instanceof BotsRouteMissing) setMissing(true);
@@ -70,7 +91,7 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
       },
     );
     return () => { current = false; };
-  }, [api]);
+  }, [api, onSettings]);
 
   if (missing) return null;
   if (!saved) {
@@ -83,6 +104,8 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
   }
 
   const state = saved.areas[AREA];
+  // Only Telegram is optional: a backend without its separate grant does not report it.
+  if (state === undefined) return null;
 
   const change = async (enabled: boolean) => {
     setFailed(false);
@@ -92,6 +115,8 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
       const stored = await changeReadArea(api, await api.readSettings(), AREA, enabled);
       if (!alive.current) return;
       setSaved(stored);
+      onSettings?.(stored);
+      onChanged?.(stored);
       setConfirming(false);
     } catch {
       if (!alive.current) return;
@@ -102,8 +127,9 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
     }
   };
 
+  const expiresAt = AREA === "telegram" ? saved.telegramExpiresAt : saved.expiresAt;
   const line = state === "on"
-    ? (saved.expiresAt === null ? "" : COPY.on(dateOf(saved.expiresAt)))
+    ? (expiresAt == null ? "" : COPY.on(dateOf(expiresAt)))
     : state === "ended" ? COPY.ended : COPY.off;
 
   return (
@@ -115,15 +141,17 @@ function ReadAreaAccess({ api, area: AREA, copy: COPY }: { api: MeetingsAccessAp
       {confirming ? (
         <Confirm copy={COPY} busy={saving} onConfirm={() => void change(true)} onCancel={() => setConfirming(false)} />
       ) : (
-        <div>
+        <div className="flex flex-wrap gap-2">
           {state === "on" ? (
             <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => void change(false)}>{COPY.turnOff}</Button>
           ) : (
             <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => { setFailed(false); setConfirming(true); }}>{COPY.allow}</Button>
           )}
+          {onNotNow ? <Button type="button" variant="ghost" size="sm" disabled={saving} onClick={onNotNow}>{ASK_STRINGS.notNow}</Button> : null}
         </div>
       )}
       {failed ? <p role="alert" className="text-callout text-muted-foreground">{COPY.failed}</p> : null}
+      {AREA === "feed_chats" && chatList && loadedApi === api && api.chatReadAccess ? <ChatReadAccess api={api.chatReadAccess} /> : null}
     </section>
   );
 }

@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -19,22 +21,19 @@ import {
   createAndSignIn,
   createTinyCloudWeb,
   createApiClient,
-  openKeyRenewalClient,
   renewalVerifyProof,
   requestNonce,
   restoreTinyCloudWebSession,
   verifyRenewedSession,
   verifySession,
-  type OpenKeyRenewalOutcome,
 } from "@tinyboilerplate/client";
 import {
   CONNECTORS_KV_PREFIX,
   manifestCarriesBundle,
   OFFERED_CHAT_MODELS,
   offeredChatModelContextTokens,
-  SESSION_EXPIRATION_MS,
 } from "@tinyboilerplate/core";
-import { SIGN_IN_RENEWAL_ASK, admitSignInRenewal, renewalRestoreFor } from "./lib/renewalReceipt";
+import { desktopSignInWithRenewal, renewalRestoreFor, webSignInRenewal } from "./lib/renewalReceipt";
 import { withConnectorDecryptGrants } from "./lib/connectors/encryptionGrant";
 import { homeFeaturesToRequest, webSignInManifest, readHomeFeatures, type HomeFeature } from "./lib/homeFeatures";
 import { rememberExistingWebConnectors } from "./lib/rememberWebConnectors";
@@ -111,6 +110,7 @@ import {
   onPaywallError,
 } from "./lib/chatApi";
 import { isPaywallActionable } from "./lib/paywall";
+import type { CreditLimitContext } from "./lib/creditLimit";
 import {
   fetchConfigWithRetry,
   shouldRefetch,
@@ -120,6 +120,7 @@ import { Button } from "@/components/ui/button";
 import { FeedView } from "./feed/FeedView";
 import { ChatSlot } from "./bots/ChatSlot";
 import { useBotHistoryDescriptorRenewal } from "./bots/historyAuthorization";
+import { resetEarlierHistory } from "./bots/earlierHistory";
 import { homeFeedSourceFor, settleHeldAnswersForSignOut, SIGN_OUT_FLUSH_MS } from "./feed/feedStore";
 import { HomeEntryGate } from "./home/HomeEntryGate";
 import { readCachedFirstScreen, readFirstScreen } from "./home/firstScreenStore";
@@ -129,7 +130,7 @@ import { MicDeniedRecovery } from "./capture/recorder/MicDeniedRecovery";
 import { RecorderShell } from "./capture/recorder/RecorderShell";
 import { UploadResumer } from "./capture/upload/UploadResumer";
 import { TinyCloudButtonSync } from "./chat/TinyCloudButtonSync";
-import { useOpenSavedNote } from "./capture/library/useOpenSavedNote";
+import { useOpenSavedNote, useShowRecordingNote } from "./capture/library/useOpenSavedNote";
 import { resetNavigationMemory } from "./shell/navigation";
 import { ONE_ADD_APP_ENABLED, ONE_NAV_ENABLED } from "./shell/navPins";
 import {
@@ -177,9 +178,7 @@ import { clearVaultSecretCache } from "./lib/connectors/connectorSecrets";
 import { isSignInCancelled, UserFacingError } from "./lib/authErrors";
 import { signOutOpenKeySession } from "./lib/openkeySignOut";
 import { registryPublishConfig } from "./lib/registryConsent/config";
-import { startSignOutClosingRegistryConsent, cancelPendingRegistryConsent } from "./lib/registryConsent/broker";
-import { runFinishSetupIntent, runSignInRegistryPublish } from "./lib/registryConsent/intent";
-import { RegistryConsentDialog } from "./shell/RegistryConsentDialog";
+import { FinishSetupLinkHost } from "./shell/FinishSetupNotice";
 import { clearSessionAfterHandoff, registerSessionSignedOutHook } from "./lib/sessionSignedOut";
 import {
   describeAuthFailure, isNativeOpenKeySession, isNativeOpenKeySignIn, isNativeStorageError, logNativeOpenKeyError,
@@ -205,6 +204,7 @@ import { setSignedIn } from "./lib/signedIn";
 import { NativeSignIn } from "./shell/NativeSignIn";
 import { useNativeSignIn } from "./shell/useNativeSignIn";
 import { lazyTab } from "./shell/lazyTab";
+import { isSensitiveScreen, REPORT_BUG_ENABLED } from "./lib/reportBug/config";
 import { setTinyCloudWebMcpFeedLoader, tinyCloudWebMcpFeedEnabled } from "./lib/webMcp";
 import { closeAllEmbeds } from "./apps/liveEmbeds";
 
@@ -226,6 +226,8 @@ const OneAppScreen = lazyTab("Apps", () => import("./apps/FramedAppScreen").then
 const AddAppPage = lazyTab("Apps", () => import("./apps/AddAppPage").then((m) => m.AddAppPage));
 const SettingsPage = lazyTab("Settings", () => import("./chat/SettingsPage").then((m) => m.SettingsPage));
 const AboutPage = lazyTab("How it works", () => import("./chat/AboutPage").then((m) => m.AboutPage));
+// TC-3716 Report a bug: off unless VITE_REPORT_BUG is "true"; its chunk loads only then.
+const ReportBugHost = REPORT_BUG_ENABLED ? lazy(() => import("./shell/ReportBugHost")) : null;
 const LAZY_SCREENS = [ChatWorkspace, CaptureSurface, MeetingsSection, ConnectorsPage, AppsPage, SettingsPage, AboutPage];
 // The signed-out recorder's screens: only the phone and desktop apps show them, so the web never fetches them.
 const DeviceCaptureSurface = lazyTab("Recording", () => import("./capture/DeviceCaptureSurface").then((m) => m.DeviceCaptureSurface));
@@ -314,6 +316,7 @@ export function App() {
       connect: () => connectWallet({ appName: APP_NAME, host: OPENKEY_HOST, passkeysSupported: openkeyPasskeysSupported() }),
       prefetch: createWebSignInPrefetch(BACKEND_URL, { requestNonce }),
       createTcw: createTinyCloudWeb,
+      renewalSignIn: webSignInRenewal,
       verify: (siwe, signature) => verifySession(BACKEND_URL, siwe, signature),
     }, {
       address,
@@ -464,6 +467,7 @@ export function App() {
     const accountDid = tcw?.did ?? did ?? (storedAddress ? `did:pkh:eip155:1:${storedAddress}` : null);
     if (tcw && clientHasReplication(tcw)) stopReplicationFill(tcw);
     historyPrefetch.clear();
+    resetEarlierHistory();
     clearBackgroundDrainRecord();
     uploadRunner.reset();
     voiceNotePipeline?.cancelAll();
@@ -485,8 +489,7 @@ export function App() {
     // The Home features flag stays: it holds no secrets and lets the next sign-in ask for those sets.
     if (tcw) {
       const cleanup = () => { try { tcw.cleanup(); } catch { /* Continue local cleanup. */ } };
-      // The SDK's sign-out starts first, then the registry consent closes (answered false): see broker.ts.
-      const localSignOut = startSignOutClosingRegistryConsent(() => signOutReplicaAware(tcw));
+      const localSignOut = signOutReplicaAware(tcw);
       // Binding paused: this client never bound the saved copy, so its signOut cannot erase it. Erase it
       // now instead of at the next page load (replicationOffPurge.ts); a failure warns like a bound
       // sign-out's and leaves the retry markers for the next load.
@@ -506,8 +509,6 @@ export function App() {
           setError(WEB_SIGN_OUT_RECOVERY_WARNING);
         })
         .finally(cleanup);
-    } else {
-      cancelPendingRegistryConsent();
     }
     selectionControllerRef.current = null;
     memoryRef.current = null;
@@ -806,9 +807,10 @@ export function App() {
         setState("unauthenticated");
         return;
       }
-      // TC-2872: past the saved session's signed end, its own verified renewal receipt carries it (web only). With the
+      // Past the saved session's signed end, its own verified renewal receipt carries it. With the
       // bearer gone too, the receipt's account is the one restored, and the backend reissues the bearer from it.
-      const renewalRestore = appPlatform() === "web" && !LOCAL_VALIDATION
+      const platform = appPlatform();
+      const renewalRestore = !LOCAL_VALIDATION && (platform === "web" || platform === "tauri")
         ? await renewalRestoreFor(sessionStoreRef.current.getAddress())
         : null;
       if (!mayCommitRestore()) return;
@@ -1007,6 +1009,17 @@ export function App() {
     billingConfigRef.current = billingConfig;
   }, [billingConfig]);
 
+  // What a turn that got no reply for lack of credits says about the plan and
+  // the reset time. Read at turn end, so it holds the latest billing status.
+  const creditLimitContextRef = useRef<CreditLimitContext>({ tierName: null, resetsAt: null });
+  useEffect(() => {
+    creditLimitContextRef.current = {
+      tierName: billingTierName,
+      resetsAt: billingStatus?.usage.resetsAt ?? null,
+    };
+  }, [billingTierName, billingStatus]);
+  const getCreditLimitContext = useCallback(() => creditLimitContextRef.current, []);
+
   // Re-request the config for a trigger, but ONLY while it is still null
   // (shouldRefetch). A held config is never re-fetched — no polling, no focus
   // storms. Each trigger refetch is a single attempt (the trigger IS the
@@ -1113,10 +1126,16 @@ export function App() {
       // ST3 — branch on the error so we only open the pricing dialog when an
       // upgrade can actually resolve the 402. `credit_budget_exceeded` and a
       // `model_not_allowed` carrying a higher `requiredTier` are upgrade-fixable.
-      const actionable = isPaywallActionable(payload);
+      const actionable = isPaywallActionable(payload, billingConfigRef.current);
       if (actionable) {
         void refreshBillingStatus();
         setPricingOpen(true);
+        return;
+      }
+      // Out of credits on the top tier: no upgrade exists, so the in-chat
+      // message stands alone and the dialog stays closed.
+      if (payload.error === "credit_budget_exceeded") {
+        void refreshBillingStatus();
         return;
       }
       // A `model_not_allowed` with no actionable requiredTier cannot be fixed by
@@ -1138,10 +1157,16 @@ export function App() {
     return onAgentPaywallError((payload) => {
       // A1 trigger (b): recover a config-null session on a 402 (see above).
       refetchConfigOnTrigger("paywall-402");
-      const actionable = isPaywallActionable(payload);
+      const actionable = isPaywallActionable(payload, billingConfigRef.current);
       if (actionable) {
         void refreshBillingStatus();
         setPricingOpen(true);
+        return;
+      }
+      // Out of credits on the top tier: no upgrade exists, so the in-chat
+      // message stands alone and the dialog stays closed.
+      if (payload.error === "credit_budget_exceeded") {
+        void refreshBillingStatus();
         return;
       }
       remediateUnavailableModel();
@@ -1244,6 +1269,7 @@ export function App() {
       setState("signing");
       // setupSpaceSession + ensureSpaceExists happen inside the SDK when
       // autoCreateSpace is true; the manifest grants tinycloud.kv on the space.
+      const platform = appPlatform();
       const signInConfig = {
         address: connectedAddress,
         nonce,
@@ -1254,7 +1280,7 @@ export function App() {
         uiPlatform: sdkUiPlatform(),
         // The web asks for connector secrets and the decrypt grant only once this device has used Connectors (opening
         // it asks in place otherwise). The desktop app signs in with them; the phone app signs in above, natively.
-        manifest: appPlatform() === "web"
+        manifest: platform === "web"
           ? webSignInManifest(manifest, readHomeFeatures(browserRevisionStore(), connectedAddress), connectedAddress)
           : withConnectorDecryptGrants(manifest, connectedAddress),
         // The dev WebView runs at localhost:5186, whose port the SDK signs into
@@ -1264,32 +1290,29 @@ export function App() {
         // replica prefixes at this sign-in; see lib/replication/replicationClient.ts.
         ...(LOCAL_VALIDATION ? {} : await replicationConfigPatch(replicationPrincipalFor(connectedAddress))),
       };
-      // TC-2872: the web signs in through OpenKey's own window, which offers renewal beside the session it signs.
-      // The desktop app keeps the wallet signature. The nonce reaches OpenKey through the config.
-      let renewalOutcome: OpenKeyRenewalOutcome = {};
-      // When the lease arrived, on this device's monotonic clock: it is sent to the node only within a minute of it.
-      let renewalArrivedAt: number | undefined;
-      const openkeySignIn = appPlatform() === "web"
-        ? {
-            openkey: {
-              client: openKeyRenewalClient(openkey, SIGN_IN_RENEWAL_ASK, (outcome) => {
-                renewalOutcome = outcome;
-                renewalArrivedAt = performance.now();
-              }),
-              mode: "iframe" as const,
-              expiryChangeable: true,
-              maxExpiresAt: () => Date.now() + SESSION_EXPIRATION_MS,
-            },
-          }
-        : {};
+      // OpenKey offers renewal alongside sign-in on web and desktop.
+      const renewal = !LOCAL_VALIDATION && (platform === "web" || platform === "tauri")
+        ? webSignInRenewal(openkey, signInConfig.manifest)
+        : undefined;
+      const signingProvider = prefetch.guardSigning(web3Provider);
       const { tcw: signedTcw, session } = LOCAL_VALIDATION
         ? await (async () => {
-            const localTcw = createTinyCloudWeb(prefetch.guardSigning(web3Provider), { ...signInConfig, siweConfig: { nonce } });
+            const localTcw = createTinyCloudWeb(signingProvider, { ...signInConfig, siweConfig: { nonce } });
             await prepareLocalSignIn(localTcw);
             await localTcw.clearPersistedSession(connectedAddress);
             return { tcw: localTcw, session: await localTcw.signIn({ nonce }) };
           })()
-        : await createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, ...openkeySignIn });
+        : platform === "tauri" && renewal
+          ? await desktopSignInWithRenewal(renewal.config, async (config) => {
+              if (config) return createAndSignIn(signingProvider, { ...signInConfig, ...config });
+              prefetch?.cancel();
+              prefetch = createWebSignInPrefetch(BACKEND_URL, {
+                requestNonce: (url) => requestNonce(url, connectedAddress),
+              });
+              const nonce = await prefetch.nonceForSigning(connectedAddress);
+              return createAndSignIn(prefetch.guardSigning(web3Provider), { ...signInConfig, nonce });
+            })
+          : await createAndSignIn(signingProvider, { ...signInConfig, ...renewal?.config });
 
       rememberReplicationPrincipal(signedTcw);
       // Exchange the SIWE message for a backend Bearer token (for /api/chat).
@@ -1300,7 +1323,7 @@ export function App() {
       sessionStoreRef.current.setSession(verified.token, verified.expiresIn, connectedAddress);
       // OpenKey signed and recorded the lease but doesn't send it to the node: the session's node admits it here,
       // within a minute of its arrival, else this sign-in runs to its signed end without renewal (lib/renewalReceipt.ts).
-      await admitSignInRenewal({ tcw: signedTcw, address: connectedAddress, renewal: renewalOutcome.renewal, arrivedAt: renewalArrivedAt });
+      await renewal?.admit(signedTcw, connectedAddress);
       // Marked current only if the manifest this sign-in used carries the bundle (an older served manifest does not).
       recordManifestRevisionIfSigned(browserRevisionStore(), connectedAddress, manifest);
       // The SDK keeps this provider for later user-authorized operations;
@@ -1317,8 +1340,6 @@ export function App() {
       setSpaceId(signedTcw.spaceId ?? null);
       void ensureTranscriptWriterDelegation({ tcw: signedTcw, backendUrl: BACKEND_URL, sessionStore: sessionStoreRef.current });
       setState("ready");
-      // TinyChat signs in with autoBootstrapAccount off, so the SDK does not publish at sign-in on its own: ask it here.
-      void runSignInRegistryPublish(signedTcw, { location: window.location, history: window.history });
     } catch (caught) {
       if (isSignInCancelled(caught)) {
         setError(null);
@@ -1508,14 +1529,11 @@ export function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
-  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry removes the query, then asks to
-  // publish. Inert while the consent is off.
-  useEffect(() => {
-    if (state !== "ready" || !tcw) return;
-    void runFinishSetupIntent(tcw, { location: window.location, history: window.history });
-  }, [state, tcw, location.search]);
+  // A signed-in page opened (or navigated, by the Home card) to ?finish-setup=registry is handled by FinishSetupLinkHost,
+  // mounted below. TinyChat signs in with autoBootstrapAccount off, so nothing else asks.
   // The recorder's Open: the Library, then the note just saved.
   const openSavedNote = useOpenSavedNote(tcw);
+  const showRecordingNote = useShowRecordingNote();
   const loadFirstScreen = useCallback(() => readFirstScreen(tcw!, did), [tcw, did]);
   const cachedFirstScreen = useCallback(() => readCachedFirstScreen(did), [did]);
   const { size } = useSizeClass();
@@ -1659,6 +1677,7 @@ export function App() {
       onSignedOut={captureHandoff}
       onSignIn={authAction}
       minimiseOnSignIn={nativeSignIn}
+      onShowNote={showRecordingNote}
     >
     <div
       className="flex flex-col bg-background text-foreground"
@@ -1727,6 +1746,7 @@ export function App() {
                   headerRecorder={<HeaderLiveChip />}
                   settings={!LOCAL_VALIDATION}
                   billingStatus={billingStatus}
+                  getCreditLimitContext={getCreditLimitContext}
                 />
                 } />
               }
@@ -1812,7 +1832,11 @@ export function App() {
         nativeSignInScreenShown: nativeSignInFlow.screenShown, shareTokenPresent: !!shareToken }) && <RecordingOverlay />}
       {/* Face ID / passcode over everything in the phone app (TC-2738); the app keeps loading underneath. */}
       <AppLockGate />
-      <RegistryConsentDialog />
+      {ReportBugHost && !LOCAL_VALIDATION && (
+        <Suspense fallback={null}>
+          <ReportBugHost tcw={isReady ? tcw : null} screenId={screen.id} sensitive={isSensitiveScreen(screen, location.pathname, shareToken)} />
+        </Suspense>
+      )}
       {captureFailClosed && <div role="alert" className="fixed inset-x-4 bottom-4 z-[60] rounded-xl border bg-card p-4 shadow-lg">
         Recordings are being kept unassigned until TinyCloud One can update this phone.
         <button type="button" className="ml-3 underline" onClick={() => void signOut()}>Retry</button>
@@ -1847,6 +1871,7 @@ export function App() {
         />
       )}
       <StorageFullDialog open={storageDialogOpen} onOpenChange={setStorageDialogOpen} paywallEnabled={paywallEnabled} />
+      <FinishSetupLinkHost tcw={tcw} ready={state === "ready"} searchKey={location.search} />
       <PendingVoiceNoteSignOutDialog
         open={pendingVoiceNoteSignOut !== null}
         count={pendingVoiceNoteSignOut?.count ?? 0}

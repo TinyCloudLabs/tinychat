@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
-  title: "TinyChat API"
+  title: "TinyCloud One API"
   version: 0.1.0
   description: |
-    API contract for the TinyChat backend.
+    API contract for the TinyCloud One backend.
 
     All responses include X-Request-Id. Only canonical RFC 9562 UUIDs (36-character
     8-4-4-4-12 hexadecimal format, versions 1-8, variant 10xx) are accepted,

@@ -5,7 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { type ActivityRecord, HistoryJournal, type HistoryOptions, type StagedHistory } from "./history";
+import { type ActivityRecord, HistoryJournal, type HistoryGrantUpdate, type HistoryOptions, type HistoryPermission, readHistoryRevocation, removeHistoryRevocation, saveHistoryRevocation, type StagedHistory, updateHistoryPermission } from "./history";
 import { isRecord } from "./guards";
 import { type BotLayout, botLayout, type LayoutRoots } from "./layout";
 import { MESSAGING_STRINGS } from "./messaging-strings";
@@ -13,16 +13,17 @@ import { BOT_ID, botIdFor, MAIN_BOT_NAME, MAIN_KEY } from "./owner";
 import { type DeleteSkip, lastUsed, markUsed, removeWorkingState } from "./retention";
 import { type OwnerDate, ownerDateLine } from "./owner-date";
 import { type Frame, type HostToolHandler, type HostToolReply, RpcError } from "./rpc";
+import { type TurnStep, TurnSteps } from "./turn-step";
 import { addressesIn } from "./web";
 import { readWebPolicy, type WebPolicy, writeWebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
+import { type AnswerInput, type AnswerResult, type AppOrigin, AskStore, type AskReply, type AskRequest, asksFile, cancelAsks, readAsksEnabled, type SecretLine, sweepAsks as sweepAskStores, writeAsksEnabled } from "./asks";
 import { type ReadArea, type ReadsSetting, readReads, writeReads } from "./reads";
 import { type ActionOutcome, type ActionReply, type ActionRequest, type ActionResult, ActionStore, type ApproveResult, actionBinding } from "./actions";
 
 /** Where a message the app sends Main comes from: a decided question or secret request, or a decided proposal. */
 export type AppSource = { app: AppOrigin["app"] | ActionReply["decision"]; secret?: SecretLine };
 
-export type ErrorCode = "bot_unavailable" | "model_unavailable" | "busy" | "at_capacity" | "invalid";
+export type ErrorCode = "bot_unavailable" | "model_unavailable" | "turn_timeout" | "busy" | "at_capacity" | "invalid";
 
 export const MAX_TEXT = 8000;
 
@@ -30,6 +31,7 @@ export const MAX_TEXT = 8000;
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   bot_unavailable: `${MAIN_BOT_NAME} isn't available. Try again later.`,
   model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
+  turn_timeout: `${MAIN_BOT_NAME} reached the time limit for this task.`,
   busy: `${MAIN_BOT_NAME} is still working on your last message. Send this one when it replies.`,
   at_capacity: `${MAIN_BOT_NAME} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.`,
   invalid: "Messages can be up to 8,000 characters.",
@@ -39,6 +41,8 @@ export interface TurnSink {
   status(state: "starting" | "working"): void;
   delta(text: string): void;
   activity?(record: ActivityRecord): void;
+  /** What the bot is doing (turn-step.ts): a fixed id, and a page read's host. Not kept in the history. */
+  step?(step: TurnStep): void;
   done(messageId: string): void;
   error(code: ErrorCode): void;
 }
@@ -90,6 +94,10 @@ export interface SandboxLauncher {
   leftover(layout: BotLayout, sandboxOnly?: boolean): boolean;
   /** `botName` is the name the owner sees, for the bot's prompt only; absent, the prompt uses MAIN_BOT_NAME. */
   launch(layout: BotLayout, botName?: string): Promise<Sandbox>;
+  /** Opens a gateway meter before the bot's model calls. Telemetry failures do not affect the turn. */
+  beginTurn?(layout: BotLayout): Promise<void>;
+  /** Closes the meter after the prompt. The gateway logs once in-flight model calls settle; the supervisor does not wait. */
+  endTurn?(layout: BotLayout): Promise<void>;
   /** Retries cleanup for a stopped bot, including after the supervisor has restarted. */
   cleanupEgress?(layout: BotLayout): Promise<boolean>;
   /** Every mount point the supervisor sees (decoded from /proc/self/mountinfo). */
@@ -134,7 +142,7 @@ export const HEARTBEAT_MS = 15_000;
 export interface BotOptions {
   /** Idle time after session_settled before the sandbox stops. */
   idleMs: number;
-  /** A turn with no prompt_result by then ends with bot_unavailable and its sandbox is killed. */
+  /** A turn with no prompt_result by then ends with turn_timeout and its sandbox is killed. */
   turnTimeoutMs: number;
   /** Assistant text bytes per turn; past it the agent's turn is aborted and the stream ends with an error. */
   maxTurnBytes: number;
@@ -373,9 +381,8 @@ export class Bot {
   readonly #running: RunningLimit;
   #history: HistoryJournal | undefined;
   /** The newest archive grant seen by a bot that has no journal to record it in (a sibling that has not run yet). */
-  // In memory only (a journal or directory made for it would break the rule that a sibling that never ran leaves none): the
-  // backend drain sends a sibling's grant again every few minutes, so one lost to a restart is picked up again.
-  #grantSeen: number | undefined;
+  // The backend resends live grants. A confirmed revoke also has a durable marker outside the working directory.
+  #grantSeen: HistoryPermission | undefined;
   #sandbox: Sandbox | undefined;
   #starting: Promise<Sandbox> | undefined;
   #stopping: Promise<StopFailure | undefined> | undefined;
@@ -450,9 +457,11 @@ export class Bot {
         // delete the bot with it.
         const journal = this.#journal();
         const granted = this.#hasGrant();
-        if (granted) {
+        if (granted && !(journal.permission ?? this.#grantSeen)?.revoked) {
           journal.begin(owner ?? "", this.#options.maxTurnBytes * 16 + 128 * 1024);
-          if (!journal.everGranted) journal.permissionActive(this.#grantSeen!);
+          if (!journal.everGranted && this.#grantSeen) {
+            journal.permissionActive(this.#grantSeen.validUntil, Date.now(), this.#grantSeen.grant);
+          }
           journal.append({
             type: "user", text, at: new Date().toISOString(),
             ...(typeof from === "object" ? { origin: "app", decision: from.app, ...(from.secret ? { secret: from.secret } : {}) } : {}),
@@ -470,6 +479,7 @@ export class Bot {
       status: state => output.status(state),
       delta: text => { turnJournal?.delta(text); output.delta(text); },
       activity: record => { turnJournal?.append(record); output.activity?.(record); },
+      step: step => output.step?.(step),
       done: messageId => { turnJournal?.finishDraft({ type: "done", messageId }); output.done(messageId); },
       error: code => { turnJournal?.finishDraft({ type: "error", code }); output.error(code); },
     };
@@ -478,6 +488,7 @@ export class Bot {
     let state: "starting" | "working" = this.#sandbox ? "working" : "starting";
     sink.status(state);
     const heartbeat = setInterval(() => sink.status(state), HEARTBEAT_MS);
+    let metered = false;
     try {
       let sandbox: Sandbox;
       try {
@@ -504,6 +515,8 @@ export class Bot {
         state = "working";
         sink.status(state);
       }
+      metered = true;
+      await this.#launcher.beginTurn?.(this.layout).catch(() => {});
       if (!messenger || !sandbox.onHostToolCall) {
         await this.#turn(sandbox, promptText(text, from, date), sink);
         return;
@@ -530,6 +543,7 @@ export class Bot {
         try { turnJournal.append({ type: "provenance", receipts: await this.#launcher.provenance?.(this.layout) ?? [] }); }
         catch { turnJournal.append({ type: "provenance", verified: false }); }
       }
+      if (metered) await this.#launcher.endTurn?.(this.layout).catch(() => {});
       this.#busy = false;
       this.#armIdle();
     }
@@ -542,7 +556,7 @@ export class Bot {
       if (this.#retired) throw new Error("bot_retired");
       this.#history ??= new HistoryJournal(this.layout, this.#options.history);
       // A bot that keeps no journal (TC-3933) shows what its own state holds, as a bot without history does.
-      if (this.#hasGrant() && !this.#history.legacyPending) {
+      if (this.#hasGrant() && !this.#history.permission?.revoked && !this.#history.legacyPending) {
         const messages = this.#history.messages();
         if (messages.length) this.#markUsed();
         return messages;
@@ -607,7 +621,7 @@ export class Bot {
     return saved.then(() => this.webSettings());
   }
 
-  /** Whether the owner lets Main ask questions. Off until turned on. */
+  /** Whether the owner lets Main ask questions. On until the owner turns it off. */
   async asksSettings(): Promise<AsksSettings> {
     await this.#deleting;
     return { enabled: readAsksEnabled(this.layout) };
@@ -702,8 +716,8 @@ export class Bot {
    */
   async approveRequest(id: string, binding: string, messenger: BotMessenger): Promise<ApproveResult> {
     await this.#deleting;
-    // A chat that read the owner's meetings sends nothing to other bots: the proposal stays as it is and the card says why.
-    if (await this.holdsOwnerData()) return { ok: false, error: "held" };
+    // Approval names the exact stored recipients and text. Direct model-initiated
+    // messaging still checks holdsOwnerData(); this owner-approved path does not.
     const store = new ActionStore(this.layout);
     const approved = store.approve(id, binding, this.layout.ownerId);
     if (!approved.ok) return approved;
@@ -785,7 +799,8 @@ export class Bot {
    * The one way a bot's working state is deleted: stops its sandbox, then removes its data directory (state snapshot
    * and last-use marker) and its run directory. A failed teardown, a path that is not the bot's own directory, a
    * mount at or under either directory keeps everything and logs
-   * state_delete_skipped instead. A request that arrives meanwhile waits for this, then starts a fresh bot; with
+   * state_delete_skipped instead. An owner's off for questions and requests is written back once the directory is gone,
+   * since a missing setting reads as on. A request that arrives meanwhile waits for this, then starts a fresh bot; with
    * `retire` (the backend is deleting the bot) it is refused instead, and nothing is written for the bot again.
    * Resolves to why the state was kept, or to undefined once it is gone.
    */
@@ -794,6 +809,7 @@ export class Bot {
     if (retire) this.#retiring = true;
     this.#deleting ??= (async () => {
       let cause: DeleteSkip | undefined;
+      let asksOff = false;
       try {
         const stopFailure = await this.#stopSandbox();
         if (this.#launcher.leftover(this.layout)) cause = "teardown_failed";
@@ -810,13 +826,20 @@ export class Bot {
             // state of a bot that never had a grant, as before the journal stopped being kept for it. Only the owner's own
             // New chat or deletion does.
             if (this.#options.history && !this.#hasGrant() && reason !== "new_chat" && reason !== "deleted") cause = "ungranted_retained";
-            else cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
-              ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+            else {
+              // Read before the directory goes: a missing setting reads as on, so an owner's off is written back below.
+              asksOff = !readAsksEnabled(this.layout);
+              cause = this.#options.history && this.#hasGrant() && (!covered || !this.#history?.covered) && !this.#history?.expiryDue()
+                ? "archive_pending" : await removeWorkingState(this.layout, this.#launcher);
+            }
           }
         }
+        if (!cause && this.#retiring && this.layout.botKey !== undefined) removeHistoryRevocation(this.layout);
       } catch {
         cause = "error";
       }
+      // Also after a deletion that stopped part-way: the setting file may be gone while the rest is left.
+      if (asksOff && !this.#retiring) this.#keepAsksOff();
       if (cause) log("state_delete_skipped", this.layout.botId, { reason, cause });
       else {
         this.#history = undefined;
@@ -831,17 +854,26 @@ export class Bot {
     return this.#deleting;
   }
 
+  /** Writes the owner's off for questions and requests back when the setting file is gone. Logged when it cannot be. */
+  #keepAsksOff(): void {
+    try {
+      if (!lstatSync(asksFile(this.layout), { throwIfNoEntry: false })) writeAsksEnabled(this.layout, false);
+    } catch {
+      log("asks_setting_keep_failed", this.layout.botId);
+    }
+  }
+
   /**
    * The owner's "Start a new chat": deletes the working state (deleteWorkingState), so the conversation, its pending
-   * questions and the mark of owner data it read are gone, then saves the owner's settings again: web access, the
-   * questions setting and the read areas. Only their on/off fields come back; nothing about the old conversation does.
+   * questions and the mark of owner data it read are gone, then writes the owner's settings back: web access and the
+   * read areas (deleteWorkingState keeps the questions setting). Only their on/off fields come back; nothing about the
+   * old conversation does.
    * Refused while a request is in flight or a deletion is under way. The settings are saved again by a callback on the
    * deletion itself, registered before any request can wait on it, so a fresh sandbox always starts with them.
    */
   newChat(closing: () => boolean): Promise<DeleteSkip | "busy" | undefined> {
     if (this.inUse || this.#deleting) return Promise.resolve("busy");
     const web = readWebPolicy(this.layout);
-    const asks = readAsksEnabled(this.layout);
     const reads = readReads(this.layout);
     return this.deleteWorkingState("new_chat", closing).then(cause => {
       if (cause) return cause;
@@ -850,7 +882,6 @@ export class Bot {
           mkdirSync(this.layout.dataDir, { recursive: true, mode: 0o700 });
           writeWebPolicy(this.layout, web);
         }
-        if (asks) writeAsksEnabled(this.layout, true);
         if (reads.areas.length > 0) writeReads(this.layout, reads);
       } catch {
         // A setting that is not saved reads as off.
@@ -880,17 +911,33 @@ export class Bot {
    */
   #hasGrant(): boolean {
     if (!this.#options.history) return false;
-    return this.#journal().everGranted || (this.#grantSeen !== undefined && this.#grantSeen > Date.now());
+    return this.#journal().everGranted || (this.#grantSeen !== undefined && !this.#grantSeen.revoked && this.#grantSeen.validUntil > Date.now());
   }
-  historyPermission(owner: string, expiresAt?: number, validUntil?: number) {
-    if (expiresAt === undefined && typeof validUntil === "number" && Number.isFinite(validUntil) && validUntil > Date.now()) {
-      this.#grantSeen = Math.max(this.#grantSeen ?? 0, validUntil);
-    }
-    // A sibling that has never run has no journal, and a change of permission must not make one (or its directory).
-    return this.#historyOperation(journal => {
-      if (expiresAt === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!); }
-      else journal.permissionExpired(expiresAt, owner);
-    }, this.layout.botKey !== undefined);
+  async historyPermission(owner: string, expiresAt?: number, validUntil?: number, grant?: HistoryGrantUpdate) {
+    // A sibling that has never run holds permission in memory so that it creates no journal or directory.
+    await this.#historyOperation(journal => {
+      const now = Date.now();
+      // A confirmed revocation takes effect on receipt even if the backend clock runs ahead.
+      const expiry = grant?.kind === "revoke" && expiresAt !== undefined ? Math.min(expiresAt, now) : expiresAt;
+      if (this.layout.botKey !== undefined && !existsSync(join(this.layout.dataDir, "history.json"))) {
+        if (expiry === undefined || grant?.kind === "revoke") {
+          const current = this.#grantSeen ?? readHistoryRevocation(this.layout);
+          // A restart can lose the live grant. Record a signed revoke when there is no
+          // active permission to displace and the tag advances any saved revoke.
+          const end = expiry ?? validUntil!;
+          const canRecord = grant?.kind === "revoke" &&
+            (!current || (current.revoked && current.grant && grant.revision > current.grant.revision));
+          const baseline = canRecord ? { validUntil: end, grant } : current;
+          const next = updateHistoryPermission(baseline, end, grant, now);
+          if (next?.revoked && next !== current) saveHistoryRevocation(this.layout, next);
+          this.#grantSeen = next;
+        }
+      } else {
+        if (expiry === undefined) { journal.begin(owner, 0); journal.permissionActive(validUntil!, now, grant); }
+        else journal.permissionExpired(expiry, owner, now, grant);
+        this.#grantSeen = journal.permission;
+      }
+    });
   }
   historyStage(staged: StagedHistory) { return this.#historyOperation(journal => journal.stage(staged)); }
   historyNotice() { return this.#options.history ? this.#historyOperation(journal => journal.notice()) : Promise.resolve(undefined); }
@@ -898,6 +945,10 @@ export class Bot {
   historyExpiryDue(now = Date.now()) { return this.#options.history ? this.#journal().expiryDue(now) : false; }
   historyPending() {
     return this.#options.history ? this.#historyOperation(journal => journal.pending()) : Promise.resolve(undefined);
+  }
+  historyNeedsGrantTag(): boolean {
+    const permission = this.#options.history && this.#journal().permission;
+    return !!permission && !permission.grant && permission.validUntil > Date.now();
   }
   historyReceipt(receipt: unknown) { return this.#historyOperation(journal => journal.accept(receipt)); }
   async historyCovered(): Promise<boolean> {
@@ -929,6 +980,7 @@ export class Bot {
     const id = sandbox.nextId();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     const activity = new TurnActivity();
+    const steps = new TurnSteps(step => sink.step?.(step));
     const reaching = new Set<string>();
     // One recipient per turn: the first bot `message_bot` sends to. Sending to more takes the owner's tap (propose_action).
     let recipient: string | undefined;
@@ -982,7 +1034,7 @@ export class Bot {
     const deadline = setTimeout(() => {
       if (finished) return;
       log("turn_timeout", this.layout.botId);
-      finish({ code: "bot_unavailable" });
+      finish({ code: "turn_timeout" });
       void this.#stop(sandbox);
     }, this.#options.turnTimeoutMs);
     const off = sandbox.onFrame(frame => {
@@ -1001,13 +1053,16 @@ export class Bot {
         if (separate) sink.delta("\n\n");
         separate = false;
         wroteText = true;
+        steps.wrote();
         sink.delta(event.delta);
       } else if (frame.type === "message_end") {
         if (!isRecord(frame.message) || frame.message.role !== "assistant") return;
         firstReplyAt ??= timestamp(frame.message.timestamp);
         separate = wroteText;
+        steps.messageEnded();
       } else if (frame.type === "tool_execution_start" || frame.type === "tool_execution_end") {
         activity.frame(frame);
+        steps.tool(frame);
       } else if (frame.type === "prompt_result" && frame.id === id) {
         this.#settled = frame.sessionSettled === true;
         if (frame.status === "completed") finish({ messageId: `b-${firstReplyAt ?? Date.now()}` });

@@ -318,7 +318,7 @@ backend afterwards: `unchanged` (failed before `phala deploy`),
 later check failed; web is not deployed).
 
 The backend workflow requires the exact production OS name/hash pinned in
-`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.12`) and `is_dev=false`.
+`PHALA_OS_IMAGE` / `PHALA_OS_IMAGE_HASH` (`dstack-0.5.15`) and `is_dev=false`.
 Dev images fail closed by default. Missing/malformed metadata or a different
 name/hash also fails closed.
 
@@ -399,7 +399,7 @@ Repository **variables** (all optional — defaults shown):
 | `BOTS_SERVICE_URL` | _(empty)_ — internal URL of the bots service; never exposed to browsers. |
 | `BOTS_SERVICE_SECRET` | _(empty — repo **secret**)_ — bearer the backend sends to the bots service; never returned to clients. |
 | `BOTS_BACKEND_CALL_SECRET` | _(empty — `production-api` environment **secret**; `POST /api/internal/bots/admit` is not mounted)_ — the key the bots gateway signs sibling-admission calls with; the same value as the `production-bots` environment secret of the same name, 32 random bytes (base64url) of its own, different from `BOTS_SERVICE_SECRET`. |
-| `BOTS_POST_TIMEOUT_MS` | `120000` — overall bound on one Main bot message turn; when it fires the backend aborts the bots service request and sends a `bot_unavailable` error event. |
+| `BOTS_POST_TIMEOUT_MS` | `360000` by default — overall proxy bound, clamped to at least `BOTS_TURN_TIMEOUT_MS` plus 60 seconds. An interrupted reply emits `reply_interrupted`; a service execution deadline emits `turn_timeout`. Set the same turn budget on the backend and bot deployments. |
 | `MEETING_CONTENT_RETRIEVAL_ENABLED` | `false` (optional; only literal `true` enables controller routing for admitted accounts) |
 | `MEETING_CONTENT_TEST_ACCOUNTS` | _(empty — optional comma-separated account allowlist; entries are trimmed and lowercased)_. For turns served by MCP chat (`MCP_CHAT_ENABLED`), a `*` entry admits every MCP account; the eliza-service path never honors `*`, and an empty list admits nobody on either path. |
 | `MEETING_CONTENT_MODELS` | _(empty — optional comma-separated evaluated-model allowlist; entries are trimmed and matched exactly)_. On the eliza-service path an empty list admits no model; for turns served by MCP chat an empty list admits every offered model. |
@@ -638,8 +638,10 @@ nothing below may be reported as done on its behalf.
   manifest before the frontend revision gate. Existing web sessions re-sign
   once per device after the served bundle is available; native (mobile)
   sessions keep their previous grant until their next explicit sign-in. The broad `applications`
-  KV grant covers app folders; SQL covers Home's six databases and the named
-  Health Log and Recipes databases. Notes has no runnable beta bundle.
+  KV grant covers app folders; SQL covers Home's six databases. The Health Log
+  and Recipes databases are no longer requested at sign-in: Home never opens
+  them, and Share signs in on its own. Sessions made before that change still
+  carry them. Notes has no runnable beta bundle.
   Adding a catalog database requires a manifest bump and another one-time
   sign-in. The `secrets` grants and backend delegation policy are unchanged.
 - **SIWE audience (TC-1201):** `/api/auth/verify` checks the signed domain
@@ -662,8 +664,10 @@ nothing below may be reported as done on its behalf.
   requires a strict signed ReCap confined to Home's explicit
   `applications` scope and carrying at least one `xyz.tinycloud.tinychat/`
   app-path grant, which is the proof that the sign-in is for TinyChat. The root
-  KV grant and the two named runnable catalog databases are tolerated next to
-  it but never count as that proof on their own; other grants are rejected.
+  KV grant and the two named catalog databases (Health Log and Recipes) are
+  tolerated next to it but never count as that proof on their own; other grants
+  are rejected. The sign-in manifest no longer asks for the two databases, and
+  the backend still accepts them from older sign-ins and renewals.
   Native sign-in requests every applications-space KV, SQL and hook entry of
   the served manifest except `tinycloud.space`; OpenKey's TinyCloud One native
   client ceiling matches it (TC-2720), and the `Native ceiling` CI job PARs that

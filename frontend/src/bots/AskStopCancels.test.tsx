@@ -211,6 +211,7 @@ test("history lines with the decision stopped each show the line; the decision, 
   ];
   await render(api);
   await openChat();
+  await click(button("Show older messages"));
   expect(chatLines("stopped")).toEqual([STOPPED_LINE, STOPPED_LINE, STOPPED_LINE]);
   expect(chatLines("declined")).toEqual([]);
   expect(document.querySelector("[data-bots-main-chat]")!.textContent).not.toContain("Any words at all");

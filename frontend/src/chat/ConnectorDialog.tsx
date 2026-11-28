@@ -87,6 +87,7 @@ import {
   FirefliesClient,
   type FirefliesUser,
 } from "@/lib/connectors/firefliesClient";
+import { createFirefliesImportGrantsTeardown } from "@/lib/connectors/firefliesImportGrantsApi";
 import { syncFireflies } from "@/lib/connectors/firefliesSync";
 import { GranolaClient } from "@/lib/connectors/granolaClient";
 import { granolaConnectorEnabled } from "@/lib/connectors/granolaFeature";
@@ -949,6 +950,8 @@ const GMEET_STORE: GmeetSyncStore = {
   getConnection: connectorStore.getConnection,
   putTranscriptBody: connectorStore.putTranscriptBody,
   upsertMeeting: connectorStore.upsertMeeting,
+  isMeetingDeleted: connectorStore.isMeetingDeleted,
+  deleteSourceMeeting: connectorStore.deleteSourceMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
   getDriveCursor: connectorStore.getDriveCursor,
@@ -2313,6 +2316,9 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
       mode: resume?.mode ?? mode,
       webhooks: oauth ? NO_DELIVERY_LANE : webhooks,
       featureDark: featureDark === true,
+      ...(descriptor.id === "fireflies"
+        ? { importGrants: createFirefliesImportGrantsTeardown(tcw, backendUrl, sessionStore) }
+        : {}),
       secrets: {
         isUnlocked: () => isSecretsUnlocked(tcw),
         unlock: () => unlockSecrets<SecretsErr>(tcw),
@@ -2322,7 +2328,7 @@ export const ConnectorDisconnectDialog: FC<ConnectorDisconnectDialogProps> = ({
         listKnownSourceIds: () =>
           connectorStore.listKnownSourceIds(tcw, descriptor.source),
         // Wipes meetings + KV bodies + state row.
-        purgeConnector: () => connectorStore.purgeConnector(tcw, descriptor.source),
+        purgeConnector: () => connectorStore.purgeConnectorVerified(tcw, descriptor.source),
         clearFirefliesAttempt: () =>
           descriptor.id === "fireflies"
             ? connectorStore.clearFirefliesAttempt(tcw)

@@ -1,10 +1,11 @@
 // Own schema for a signed bot-history UCAN. The node validates the full proof chain at activation;
 // SDK 3.x may issue through a rooted child session rather than the transcript writer's direct SIWE chain.
-import { verifySiweSession } from "@tinyboilerplate/server";
+import { verifySiweSession, type SessionRenewal } from "@tinyboilerplate/server";
 import { makePkhSpaceId, verifyDidKeyEd25519Signature } from "@tinycloud/sdk-core";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import { sameTinyCloudNode } from "@tinyboilerplate/core";
 import { historyBotId, HISTORY_PREFIX } from "./bot-history.js";
+import { sessionAuthorityEnd } from "./bot-history-key.js";
 export interface HistoryGrant {
   cid: string; authorization: string; ownerAddress: string; chainId: number; spaceId: string;
   backendDid: string; expiresAt: Date; resources: [{ service: "kv"; space: string; path: string; actions: string[] }];
@@ -13,11 +14,13 @@ const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 /**
  * Accepts a grant only if it is exactly one bot's: one resource, that bot's own directory with its closing slash,
  * get and put and nothing else. `botKey` names a bot other than Main; Main's check is what it always was.
+ * `renewal` (from the verify-renewal bearer, or stored with the grant) carries the session past its SIWE's signed end.
  */
 export async function projectBotHistoryGrant(
   node: TinyCloudNode, host: string, address: string,
   envelope: { serialized: string; siwe: string; signature: string },
   botKey?: string,
+  renewal?: SessionRenewal,
 ): Promise<HistoryGrant> {
   const fail = () => { throw new Error("history_grant_rejected"); };
   // The address and the key are checked here, before anything in the envelope is read.
@@ -32,7 +35,7 @@ export async function projectBotHistoryGrant(
   if (header.alg !== "EdDSA" || typeof payload.iss !== "string" || !payload.iss.startsWith("did:key:")
     || !verifyDidKeyEd25519Signature(payload.iss.split("#")[0], Buffer.from(`${parts[0]}.${parts[1]}`), Buffer.from(parts[2]!, "base64url"))) return fail();
   const session = await verifySiweSession(envelope.siwe, envelope.signature);
-  const expires = Date.parse(session.expirationTime ?? "");
+  const expires = sessionAuthorityEnd(session, renewal);
   if (session.address.toLowerCase() !== address.toLowerCase() || session.chainId !== 1 || !Number.isFinite(expires)
     || typeof payload.exp !== "number" || payload.exp * 1000 <= Date.now() + 60_000 || payload.exp * 1000 > Math.min(expires, Date.now() + 30 * 86_400_000 + 300_000)
     || (payload.nbf !== undefined && (!Number.isFinite(payload.nbf) || payload.nbf * 1000 > Date.now()))

@@ -1,3 +1,6 @@
+/** When ⚙︎ Capture settings is not mounted, so nothing can open it for a Whisper model. */
+export const GET_WHISPER_NO_SETTINGS = "Open ⚙︎ Capture settings on the Capture page to get a Whisper model.";
+
 const openers = new Set<() => void>();
 
 /** A mounted ⚙︎ Capture settings registers how to open itself; the returned function unregisters it. */

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { TinyCloudWeb, PermissionEntry } from "@tinycloud/web-sdk";
+import type { ClientSession, TinyCloudWeb, PermissionEntry } from "@tinycloud/web-sdk";
 import { connectWallet } from "@tinyboilerplate/client";
 import { APP_NAME } from "../lib/homeSite";
 import { openkeyPasskeysSupported } from "../lib/openkeyPasskeys";
@@ -8,16 +8,15 @@ import {
   BOT_HISTORY_KEY_MAX_MS,
   BOT_HISTORY_KEY_PATH,
   botHistoryKeyUrn,
-  hasLegacyV1BotHistory,
   isCurrentHistorySession,
   publishBotHistoryKeyDescriptor,
+  readBackendSession,
   type SignedBotHistoryKeyEnvelope,
 } from "./botHistoryKey";
+import { sessionAuthorityEnd } from "./botGrantLifetime";
 import { botsApi } from "./botsApi";
 
 export const BOT_HISTORY_KEY_APPROVAL_DESCRIPTION = "Set up encryption and read chat history with your bots in your TinyCloud (up to 7 days).";
-
-export const BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION = "Read earlier chat history with your bots in your TinyCloud to move it to its own key (up to 7 days).";
 
 export function botHistoryOwnerPermissions(address: string): PermissionEntry[] {
   return [{
@@ -39,10 +38,35 @@ let declined: string | undefined;
 export const clearHistoryDecline = (): void => { declined = undefined; };
 
 export interface AuthorizeBotHistoryOptions {
-  /** Override v1 detection in tests; defaults to inspecting stored envelopes. */
-  includeLegacyNetwork?: boolean;
   /** Override descriptor POST in tests. */
   postDescriptor?: (envelope: SignedBotHistoryKeyEnvelope) => Promise<void>;
+}
+
+/**
+ * Asks the owner for `permissions` through OpenKey, for the session `tcw` holds now. One wallet connection serves every
+ * request of the returned function. Resolves with whether the owner approved; a session that changed while the owner
+ * decided, or an owner who is not the signed-in one, throws.
+ */
+export function ownerPermissionRequester(tcw: TinyCloudWeb, session: ClientSession, connect = connectWallet) {
+  const owner = session.address.toLowerCase();
+  let connected: Awaited<ReturnType<typeof connectWallet>> | undefined;
+  const assertSession = () => {
+    if (!isCurrentHistorySession(tcw, session)) throw new Error("history_authority_missing");
+  };
+  return async (permissions: PermissionEntry[]): Promise<boolean> => {
+    assertSession();
+    if (!connected) {
+      const wallet = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
+      if (wallet.address.toLowerCase() !== owner || !isCurrentHistorySession(tcw, session)) throw new Error("history_owner_changed");
+      tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature });
+      connected = wallet;
+    }
+    const remainingMs = sessionAuthorityEnd(session.siwe, readBackendSession()?.token ?? null) - Date.now();
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
+    const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
+    assertSession();
+    return result.approved;
+  };
 }
 
 /** Foreground only: first bot use/history read. Background renewal never calls this. */
@@ -61,43 +85,27 @@ export async function authorizeBotHistory(
   };
   const networkId = encryptionNetworkId(session.address, session.chainId ?? 1);
   const exact = botHistoryOwnerPermissions(session.address);
-  const network = (action: string, description: string): PermissionEntry[] => [{
-    service: "tinycloud.encryption", path: networkId, skipPrefix: true, actions: [action], description,
-  }];
-  let connected: Awaited<ReturnType<typeof connectWallet>> | undefined;
+  const request = ownerPermissionRequester(tcw, session, connect);
   const requirePermissions = async (permissions: PermissionEntry[]) => {
     if (tcw.hasPermissions(permissions)) return;
     if (declined === `${owner}:${session.sessionKey}`) throw new Error(HISTORY_DECLINED);
-    assertSession();
-    if (!connected) {
-      const wallet = await connect({ appName: APP_NAME, host: import.meta.env.VITE_OPENKEY_HOST || "https://openkey.so", passkeysSupported: openkeyPasskeysSupported() });
-      if (wallet.address.toLowerCase() !== owner || !isCurrentHistorySession(tcw, session)) throw new Error("history_owner_changed");
-      tcw.setRuntimePermissionSigner({ signMessage: async message => (await wallet.openkey.signMessage({ message })).signature });
-      connected = wallet;
-    }
-    const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(session.siwe)?.[1] ?? "");
-    const remainingMs = expires - Date.now();
-    if (!Number.isFinite(remainingMs) || remainingMs <= 0) throw new Error("history_session_expired");
-    const result = await tcw.requestPermissions(permissions, { expiryMs: Math.min(remainingMs, BOT_HISTORY_KEY_MAX_MS) });
-    assertSession();
-    if (!result.approved) {
+    if (!(await request(permissions))) {
       declined = `${owner}:${session.sessionKey}`;
       throw new Error(HISTORY_DECLINED);
     }
     if (!tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
   };
 
+  // The chat needs the one key and the network that holds it, nothing wider. Earlier (v1) history is read only after
+  // the owner asks for it separately (earlierHistory.ts), so a decline there never reaches this.
   await requirePermissions(exact);
   if (!(await tcw.getEncryptionNetwork(networkId))) {
-    await requirePermissions(network("network.create", BOT_HISTORY_KEY_APPROVAL_DESCRIPTION));
+    await requirePermissions([{
+      service: "tinycloud.encryption", path: networkId, skipPrefix: true, actions: ["network.create"], description: BOT_HISTORY_KEY_APPROVAL_DESCRIPTION,
+    }]);
   }
   assertSession();
   await tcw.ensureEncryptionNetwork();
-  assertSession();
-  const legacy = network("decrypt", BOT_HISTORY_LEGACY_APPROVAL_DESCRIPTION);
-  if (!tcw.hasPermissions(legacy) && (options.includeLegacyNetwork ?? await hasLegacyV1BotHistory(tcw))) {
-    await requirePermissions(legacy);
-  }
   assertSession();
   const descriptor = await tcw.keys.ensureKey(BOT_HISTORY_KEY_PATH, { networkId });
   assertSession();

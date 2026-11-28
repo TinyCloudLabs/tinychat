@@ -9,12 +9,21 @@ import {
   publishBotHistoryKeyDescriptor,
 } from "./botHistoryKey";
 import { botHistoryOwnerPermissions } from "./historyAuthorization";
+import { earlierHistoryPermissions, recordHeldEarlierHistory } from "./earlierHistory";
 import { BOT_HISTORY_RECORD_PREFIX, BOT_HISTORY_RECORD_SUFFIX, botHistoryDirectory } from "./botHistoryPath";
 import { isAppDecision, toSecretLine, type BotMessage } from "./botsApi";
 import { BOTS_STRINGS } from "./botsStrings";
+import { bindBotHistoryContext, checkBotHistoryContext, isContextBindingOf } from "./historyContext";
 
 /** Records of one page fetched and decrypted at once. Each decrypt is a round trip to the node (TC-3054). */
 export const HISTORY_READ_CONCURRENCY = 4;
+
+export interface BotHistoryContextReport {
+  /** Records whose full record context was present and matched. */
+  bound: number;
+  /** Stored keys of legacy records: opened by the earlier rule, no full record context. */
+  legacy: string[];
+}
 
 export type ResealFailureReason =
   | "exact_key_unavailable"
@@ -42,7 +51,15 @@ export interface ReadBotHistoryOptions {
   reseal?: boolean;
   /** Receives counts and failure codes when reseal runs. Never includes plaintext or keys. */
   onResealReport?: (report: BotHistoryResealReport) => void;
+  /**
+   * Receives the stored keys of records that carry no full record context (written earlier) and the count of
+   * records whose context was verified. Called after a read that returned. Never includes plaintext.
+   */
+  onContextReport?: (report: BotHistoryContextReport) => void;
 }
+
+/** Earlier records one foreground read rewrites with their context added (one decrypt and a few writes each). */
+export const HISTORY_REBIND_PER_READ = 20;
 
 /** Owner-authorized reads remain separate from the backend's write-only encryption role. */
 export async function readBotHistory(
@@ -108,6 +125,12 @@ async function readHistory(
   const resealEnabled = options?.reseal === true;
   const resealReport: BotHistoryResealReport = { resealed: 0, failed: [] };
   let sawV1 = false;
+  // v1 records are sealed to the whole encryption network. Without that grant they are held back, not failed: the
+  // chat reads on its own key and the owner moves the earlier ones separately (earlierHistory.ts).
+  let heldBack = 0;
+  let boundCount = 0;
+  const legacyKeys: string[] = [];
+  let rebindsLeft = HISTORY_REBIND_PER_READ;
   let cachedDescriptor: Promise<KeyDescriptor> | null = null;
 
   const ensureActiveDescriptor = async (): Promise<KeyDescriptor> => {
@@ -125,13 +148,14 @@ async function readHistory(
     return cachedDescriptor;
   };
 
-  const resealV1Record = async (
+  const rewriteRecord = async (
     key: string,
     etag: string | undefined,
     plaintext: Uint8Array,
     expectedAad: string,
     expectedAadBytes: Uint8Array,
     recordSignal: AbortSignal,
+    verifyOpened?: (opened: Uint8Array) => boolean,
   ): Promise<void> => {
     const fail = (reason: ResealFailureReason) => { resealReport.failed.push({ reason }); };
     const current = () => {
@@ -180,7 +204,7 @@ async function readHistory(
         stored.keyVersion !== descriptor.keyVersion || stored.networkId !== networkId || stored.aad !== expectedAad
       ) return fail(reason);
       const opened = await tcw.keys.decrypt(stored);
-      if (!bytesEqual(opened, plaintext)) return fail(reason);
+      if (!bytesEqual(opened, plaintext) || (verifyOpened && !verifyOpened(opened))) return fail(reason);
 
       reason = "commit_failed";
       current();
@@ -233,36 +257,44 @@ async function readHistory(
       }
       isV1 = true;
       sawV1 = true;
+      // v1 records open only with decrypt on the whole encryption network. Without that grant the record is held back
+      // before any node call (the owner has not chosen to move earlier history yet). With it, a failed decrypt fails the read.
+      if (!tcw.hasPermissions(earlierHistoryPermissions(session.address, chainId))) { heldBack++; return null; }
       const opened = await tcw.encryption.decryptEnvelope(envelope as InlineEncryptedEnvelope, { proofs: [] });
       if (!opened.ok) throw new Error("history_decrypt_unavailable");
       plaintext = opened.data;
     }
 
     const batch = JSON.parse(new TextDecoder().decode(plaintext));
+    // Every record: exact version and field types before the stored key is compared with them, and the bot it names.
     if (
-      botKey !== undefined &&
-      (batch?.v !== 1 ||
-        typeof batch.generation !== "string" ||
-        typeof batch.challenge !== "string" ||
-        !Number.isSafeInteger(batch.seq) ||
-        batch.bot !== (botKey === "main" ? undefined : botKey))
+      batch?.v !== 1 ||
+      typeof batch.generation !== "string" ||
+      typeof batch.challenge !== "string" ||
+      !Number.isSafeInteger(batch.seq) ||
+      batch.bot !== (botKey === undefined || botKey === "main" ? undefined : botKey)
     ) {
       throw new Error("history_binding_mismatch");
     }
     if (key !== `${prefix}${batch.generation}/${batch.seq}-${batch.challenge}`) {
       throw new Error("history_binding_mismatch");
     }
+    // Before anything is returned or resealed: a ctx that is present must match; no ctx is a legacy record.
+    const scope = { owner, spaceId, path: key, bot: botKey ?? "main" };
+    const legacy = checkBotHistoryContext(batch, scope) === "legacy";
+    if (legacy) legacyKeys.push(key);
+    else boundCount++;
 
+    const etag = stored.data.headers?.etag;
+    const aadBytes = new TextEncoder().encode(expectedAadJson);
     if (isV1 && resealEnabled) {
-      const etag = stored.data.headers?.etag;
-      await resealV1Record(
-        key,
-        etag,
-        plaintext,
-        expectedAad,
-        new TextEncoder().encode(expectedAadJson),
-        recordSignal,
-      );
+      await rewriteRecord(key, etag, plaintext, expectedAad, aadBytes, recordSignal);
+    } else if (legacy && resealEnabled && rebindsLeft > 0) {
+      // An owner-side rewrite of an earlier record that is already sealed to the exact key: the same batch with its
+      // context added. Foreground reads only, a few records per read; every failure leaves the stored record as it is.
+      rebindsLeft--;
+      const bound = bindBotHistoryContext(batch, scope);
+      await rewriteRecord(key, etag, bound, expectedAad, aadBytes, recordSignal, (opened) => isContextBindingOf(opened, batch, scope));
     }
 
     const record = batch.record;
@@ -308,6 +340,8 @@ async function readHistory(
     }
     options?.onResealReport?.(resealReport);
   }
+  options?.onContextReport?.({ bound: boundCount, legacy: legacyKeys });
+  recordHeldEarlierHistory(address, botKey ?? "main", heldBack);
 
   return messages.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id, undefined, { numeric: true }));
 }

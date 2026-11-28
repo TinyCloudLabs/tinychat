@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { App as CapacitorApp } from "@capacitor/app";
@@ -23,6 +23,8 @@ import { initSizeClass } from "./lib/sizeClass";
 import { initTheme } from "./lib/theme";
 import { registerDesktopVoiceNotes } from "./lib/voiceNotes/desktop/desktopVoiceNotes";
 import { installDebugLog } from "./lib/debugLog";
+import { REPORT_BUG_ENABLED } from "./lib/reportBug/config";
+import { installErrorCapture } from "./lib/reportBug/context";
 import { billingLinksAllowed } from "./lib/openManageStorage";
 import { hideSdkPurchaseLinks } from "./lib/sdkPanelPurchaseLinks";
 import { hydrateDurableKeys } from "./lib/durableKeys";
@@ -31,6 +33,12 @@ import { NATIVE_SESSION_KIND_KEY, NATIVE_SIGN_OUT_PENDING_KEY } from "./lib/open
 import { captureShareLinkFromLocation } from "./lib/nativeShares/link";
 import { ShareAppUrlListener } from "./capture/share/ShareAppUrlListener";
 import { installStatusTapScroll } from "./lib/statusTapScroll";
+
+const HandoffRoute = lazy(() => import("./handoff/HandoffPage").catch(() => {
+  // The route could not mount to consume the fragment captured by index.html.
+  window.takeHandoffFragment?.();
+  return { default: () => <Navigate to="/" replace /> };
+}));
 
 // A share link's key is in its fragment (TC-3195): read it into memory and take it off the address bar before
 // anything else runs, so no log, report or later navigation can carry it.
@@ -95,6 +103,9 @@ const originMove: Promise<OriginMoveDecision> = isLegacyOrigin(window.location)
   ? decideOriginMove({ location: window.location, opener: window.opener != null })
   : Promise.resolve({ kind: "stay" });
 
+// TC-3716: the Report a bug sheet's recent errors (memory only; flag off, nothing is collected).
+if (REPORT_BUG_ENABLED) installErrorCapture(window);
+
 // Android WebView before 137 has no WebCrypto Ed25519, which sign-in needs. If the probe itself
 // fails, WebCrypto is left exactly as the engine provides it and the app still starts.
 void installEd25519Polyfill().catch((error: unknown) => {
@@ -119,6 +130,7 @@ void installEd25519Polyfill().catch((error: unknown) => {
         <BrowserRouter>
           <Routes>
             <Route path="/" element={<RootRoute />} />
+            <Route path="/handoff" element={<Suspense><HandoffRoute /></Suspense>} />
             <Route path="/about" element={<AboutRedirect />} />
             <Route path={`${FEED_ALIAS_PATH}/:cardId`} element={<FeedCardAlias />} />
             <Route path="/chat/*" element={<CaptureEngineGate><App /></CaptureEngineGate>} />

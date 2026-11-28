@@ -28,10 +28,12 @@ export {
   verifySiweSession,
   issueSessionToken,
   verifySessionToken,
+  verifySession,
   type NonceStore,
   type NonceEntry,
   type VerifiedSiweSession,
   type SessionTokenPayload,
+  type SessionRenewal,
 } from "./auth.js";
 
 export { createCsrfMiddleware, type CsrfConfig } from "./csrf.js";

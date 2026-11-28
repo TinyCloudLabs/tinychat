@@ -136,6 +136,8 @@ export interface HomeFeedSource {
   snooze(entry: HomeFeedEntry, until: string): Promise<void>;
   setDefaultSelector(selector: FeedSelector): Promise<void>;
   subscribe(onChange: () => void): () => void;
+  /** Opens a new live-update stream now (the owner's Try again), even while the failed one waits for its retry. */
+  reconnect?(): void;
   readBody?: (key: string, signal: AbortSignal) => Promise<string>;
 }
 

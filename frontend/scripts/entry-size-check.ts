@@ -9,7 +9,18 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 /** Minified bytes. Raise it only with a reason in the PR: what the entry chunk now needs at boot that it can't load later. */
-const ENTRY_CHUNK_BUDGET = 7_630_000;
+// 7,641,000 since the speaker-names branch: voice-note saves and transcript writes now try again by themselves after
+// an outage, and the Mac's local transcription job can run Parakeet. That logic lives in the save, sync and
+// transcription modules the app starts with (about 8 KB after everything that could load later was moved out).
+// 7,645,000: release 5's changes together measure 7,642,760 bytes at boot, 1,760 over the 7,641,000 before it. The
+// extra 4,000 bytes are headroom for that release; the lazy-loading work that wins them back is TC-4328.
+// 7,652,000: the one-at-a-time Granola delete (TC-4413) measures 7,648,383 bytes at boot, 3,383 over the 7,645,000 before it.
+// The marker guard in upsertMeeting, the combined-meeting count and the delete sheet sit in the Library and sync modules
+// the app starts with. The remaining 3,617 bytes are headroom; the lazy-loading work that wins them back is TC-4328.
+// 7,661,000: Fireflies and Google Meet per-item deletion (TC-4414) measures 7,656,967 bytes at boot, 4,967 over
+// the 7,652,000 budget. Source-marker guards and the Library delete flow share startup connector modules.
+// The remaining 4,033 bytes are headroom; the lazy-loading work that wins them back is TC-4328.
+const ENTRY_CHUNK_BUDGET = 7_661_000;
 
 const dist = path.resolve(process.argv[2] ?? path.join(import.meta.dir, "../dist"));
 const html = readFileSync(path.join(dist, "index.html"), "utf8");

@@ -16,6 +16,614 @@
 - TC-2204: Native audience checks accept Home's three exact SQL hook subscriptions only alongside an existing TinyChat data grant.
 - TC-2499: The Home mirror adapter persists close receipts using node-compatible NULL/non-NULL compare-and-set predicates. If the KV mirror is already exactly closed but its receipt is missing, recovery records the original publication ETag without writing the KV copy again, before any gated child handoff. The CLI reports JSON error class, safe message, code, HTTP status when available, and operation step; private SQL bodies and nested causes remain redacted. Exit 2 identifies invalid input, exit 6 known transient failures (including NODE_BUSY and REQUEST_TIMEOUT without HTTP metadata), and exit 1 other runtime failures or OUTCOME_UNKNOWN. Unclassified errors are not labelled bad input; no failure confirms delivery or authorizes an automatic retry.
 
+## 0.22.12
+
+### Patch Changes
+
+- 6b74c53: The web app uses TinyCloud web-sdk 3.18.0. TinyCloud One never shows the SDK's own setup toast; its finish-setup notice stays the one prompt for publishing your record, with the same Publish as the Home card.
+
+  Details: TC-4322
+
+## 0.22.12-beta.0
+
+### Patch Changes
+
+- 6b74c53: The web app uses TinyCloud web-sdk 3.18.0. TinyCloud One never shows the SDK's own setup toast; its finish-setup notice stays the one prompt for publishing your record, with the same Publish as the Home card.
+
+  Details: TC-4322
+
+## 0.22.11
+
+### Patch Changes
+
+- ffc6ac9: Signing out of TinyCloud One waits while you confirm in OpenKey's sign-out window, then shows whether OpenKey signed you out. If you don't confirm within 2 minutes, it shows that the sign-out wasn't confirmed.
+
+  Details: TC-4447
+
+## 0.22.11-beta.0
+
+### Patch Changes
+
+- ffc6ac9: Signing out of TinyCloud One waits while you confirm in OpenKey's sign-out window, then shows whether OpenKey signed you out. If you don't confirm within 2 minutes, it shows that the sign-out wasn't confirmed.
+
+  Details: TC-4447
+
+## 0.22.10
+
+### Patch Changes
+
+- 4bcc6fe: The web app uses the published OpenKey sdk 0.13.0-beta.5. A sign-in window that is slow to load waits, and offers "Open in a new window" after 15 seconds. Once a page has opened a popup sign-in, its embedded requests open as popups too, so a page uses one OpenKey session. Sign-in on tinycloud.one and its finish-setup card work the same way.
+
+## 0.22.10-beta.0
+
+### Patch Changes
+
+- 4bcc6fe: The web app uses the published OpenKey sdk 0.13.0-beta.5. A sign-in window that is slow to load waits, and offers "Open in a new window" after 15 seconds. Once a page has opened a popup sign-in, its embedded requests open as popups too, so a page uses one OpenKey session. Sign-in on tinycloud.one and its finish-setup card work the same way.
+
+## 0.22.9
+
+### Patch Changes
+
+- 8d5e9b7: The web app uses the published TinyCloud web-sdk 3.17.0. The release adds OpenKey account setup for an unregistered owner who signs in to a third-party app. Sign-in on tinycloud.one and its finish-setup card are unchanged.
+
+## 0.22.9-beta.0
+
+### Patch Changes
+
+- 8d5e9b7: The web app uses the published TinyCloud web-sdk 3.17.0. The release adds OpenKey account setup for an unregistered owner who signs in to a third-party app. Sign-in on tinycloud.one and its finish-setup card are unchanged.
+
+## 0.22.8
+
+### Patch Changes
+
+- a268140: The agent guides and skills on /agents follow the reviewed guides at prompts 3360636a. The onboarding guide selects the TinyCloud CLI executable once and the blocks after it call that path directly.
+
+## 0.22.8-beta.0
+
+### Patch Changes
+
+- a268140: The agent guides and skills on /agents follow the reviewed guides at prompts 3360636a. The onboarding guide selects the TinyCloud CLI executable once and the blocks after it call that path directly.
+
+## 0.22.7
+
+### Patch Changes
+
+- cf12c92: TinyChat uses the published TinyCloud SDK release 3.16.0 (web-sdk 3.16.0, node-sdk 3.16.0, web-sdk-wasm 1.8.0). Publishing an account's registry record follows the SDK: the wallet or OpenKey signature prompt is the consent, and the SDK publishes only from TinyCloud One and Home. Anywhere else the owner is sent to TinyCloud One to finish setup. The Home card for this step reads "Let your apps find your space" and has a Publish button. It stays hidden for that account on that device once the record is published, and a refused signature or an unavailable service leaves it showing. The desktop app does not show it. Sign-in does not publish the record on its own.
+
+## 0.22.7-beta.0
+
+### Patch Changes
+
+- cf12c92: TinyChat uses the published TinyCloud SDK release 3.16.0 (web-sdk 3.16.0, node-sdk 3.16.0, web-sdk-wasm 1.8.0). Publishing an account's registry record follows the SDK: the wallet or OpenKey signature prompt is the consent, and the SDK publishes only from TinyCloud One and Home. Anywhere else the owner is sent to TinyCloud One to finish setup. The Home card for this step reads "Let your apps find your space" and has a Publish button. It stays hidden for that account on that device once the record is published, and a refused signature or an unavailable service leaves it showing. The desktop app does not show it. Sign-in does not publish the record on its own.
+
+## 0.22.6
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+- 5355ad3: The Feed reconnects its live updates on its own after the connection drops, at once when the browser is back online, and when you choose Try again. The note says "You're offline." only when the browser is offline.
+- 5355ad3: TrustBot's chat on the Feed keeps its messages, and a reply still on its way, when the owner goes to another tab and comes back. Sign-out or another account clears it.
+- 5355ad3: TrustBot asks for access to meetings, Feed and chats, or Telegram in the conversation, under the reply that needed it, only when it needed it. Allowing it there asks the question again; "Not now" hides the card.
+- 5355ad3: TrustBot's sheet opens on the conversation alone. Web access, the read settings, questions and Start a new chat move to a settings view behind a header button, with Back to return to the chat.
+
+## 0.22.6-beta.0
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+- 5355ad3: The Feed reconnects its live updates on its own after the connection drops, at once when the browser is back online, and when you choose Try again. The note says "You're offline." only when the browser is offline.
+- 5355ad3: TrustBot's chat on the Feed keeps its messages, and a reply still on its way, when the owner goes to another tab and comes back. Sign-out or another account clears it.
+- 5355ad3: TrustBot asks for access to meetings, Feed and chats, or Telegram in the conversation, under the reply that needed it, only when it needed it. Allowing it there asks the question again; "Not now" hides the card.
+- 5355ad3: TrustBot's sheet opens on the conversation alone. Web access, the read settings, questions and Start a new chat move to a settings view behind a header button, with Back to return to the chat.
+
+## 0.22.5
+
+### Patch Changes
+
+- ed7ff22: Delete individual Fireflies and Google Meet meetings and their transcripts from the Library. Sync skips deleted meetings until the user allows them back. Each source has its own allow-back control, and account deletion clears the Fireflies server markers.
+
+  Details: TC-4414
+
+## 0.22.5-beta.0
+
+### Patch Changes
+
+- ed7ff22: Delete individual Fireflies and Google Meet meetings and their transcripts from the Library. Sync skips deleted meetings until the user allows them back. Each source has its own allow-back control, and account deletion clears the Fireflies server markers.
+
+  Details: TC-4414
+
+## 0.22.4
+
+### Patch Changes
+
+- 666483e: Delete one Granola meeting and its transcript from the Library. Deleted meetings stay out of CSV imports and Granola sync until the user allows them back.
+
+  Details: TC-4413
+
+## 0.22.4-beta.0
+
+### Patch Changes
+
+- 666483e: Delete one Granola meeting and its transcript from the Library. Deleted meetings stay out of CSV imports and Granola sync until the user allows them back.
+
+  Details: TC-4413
+
+## 0.22.3
+
+### Patch Changes
+
+- d917860: The bot working line keeps every word readable while its glare moves, and a reply that comes back at once no longer flashes the working row.
+- 3812337: While a bot works on your message, the chat shows what it is doing: searching the web, reading a page, waiting for your approval, using a tool or writing the reply.
+
+  Details: TC-4382
+
+## 0.22.3-beta.1
+
+### Patch Changes
+
+- d917860: The bot working line keeps every word readable while its glare moves, and a reply that comes back at once no longer flashes the working row.
+
+## 0.22.3-beta.0
+
+### Patch Changes
+
+- 3812337: While a bot works on your message, the chat shows what it is doing: searching the web, reading a page, waiting for your approval, using a tool or writing the reply.
+
+  Details: TC-4382
+
+## 0.22.2
+
+### Patch Changes
+
+- 75286d1: The agent guides and skills on /agents follow the reviewed guides at prompts c2f46910. The apps guide tells an agent to fetch the skill's served files when no local skill file is present, so an agent that opens the apps page can save a first record.
+
+  Details: TC-4317
+
+- 4c57f71: The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+  Details: TC-4330
+
+- 10c78cd: Load Main's saved messages when the owner chooses Show older messages. Keep chat usable when history approval is declined and disclose Connectors access on the legacy history request.
+
+  Details: TC-3583
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
+## 0.22.2-beta.3
+
+### Patch Changes
+
+- 10c78cd: Load Main's saved messages when the owner chooses Show older messages. Keep chat usable when history approval is declined and disclose Connectors access on the legacy history request.
+
+  Details: TC-3583
+
+## 0.22.2-beta.2
+
+### Patch Changes
+
+- 75286d1: The agent guides and skills on /agents follow the reviewed guides at prompts c2f46910. The apps guide tells an agent to fetch the skill's served files when no local skill file is present, so an agent that opens the apps page can save a first record.
+
+  Details: TC-4317
+
+## 0.22.2-beta.1
+
+### Patch Changes
+
+- 4c57f71: The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+  Details: TC-4330
+
+## 0.22.2-beta.0
+
+### Patch Changes
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
+## 0.22.1
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.22.1-beta.0
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.22.0
+
+### Minor Changes
+
+- c3ea5f1: New setting on the Mac: Read names from the call window, in Capture settings under Meetings. It is off until you turn it on. While a recording of both sides of a call runs, TinyCloud One reads the names of the people in the call from the Google Meet or Zoom window and saves them with the note: they are offered when you rename a speaker, and with one other person in the call that name is suggested for Them. It needs Also record this Mac's audio, so it sits under that switch: turning it on turns that on too, and turning that off (or choosing Mic only for your first recording) turns it off. macOS asks for Accessibility permission; until it is allowed the setting shows Open System Settings. Saving a note never waits for the names. Nothing changes on the web or on phones.
+- c3ea5f1: The Mac's Record this call tile now stays while the recording it started runs, as a small bar: a red dot that pulses gently (still and dimmed while paused), the elapsed time, and Stop, which stops and saves the note as Stop in the app does. A newly shown tile ignores clicks for half a second, so a click meant for the call does not start a recording. The app answers the tile's Stop only while a recording is live or paused, through the recorder's own Stop.
+- c3ea5f1: New setting on the Mac: Offer to record when a call starts, the first row of Meetings in Capture settings. It is on by default. When a call starts, a small tile offers to record it: Start begins a recording, Not now closes the tile for that call. The tile is its own small page (call-prompt.html), so it does not load the app. The setting stays hidden until the desktop app supports it. Nothing changes on the web or on phones.
+- c3ea5f1: The Mac app can transcribe a stopped recording with Parakeet TDT 0.6B v3, on the Mac, as an option next to the Whisper models. It is never selected by default. Capture settings lists it after the Whisper models, with Get, progress and select like them. It runs inside the app on Core ML, and no Whisper server starts for it. The download is about 674 MB from Hugging Face: the model and a speaker-diarization bundle that the runtime needs. The files go to ~/Library/Caches/qwen3-speech. A stereo recording keeps Me and Them apart, but their order inside each 30-second stretch is approximate. With a Whisper model selected, nothing changes. Nothing changes on the web or on phones.
+
+### Patch Changes
+
+- c3ea5f1: After your TinyCloud space has been unreachable, no Activity line says "Needs attention" without a way to act on it. A transcript that is already saved in your space shows nothing when the app cannot check it there; the app checks again by itself. A transcript the app could not write to your space has Try again, which writes the transcript already on your device and never transcribes the note again. Such a write is also tried again by itself while you are signed in, and shows as Retrying with Try now until your space takes it. While a save is waiting for its next try, its audio upload line no longer says "Needs attention".
+- c3ea5f1: Renaming a speaker in a Mac recording of a call offers the names of the people in the call, when the desktop app read them from the call window: the other people for Them, and your own name for Me. Tap a name to put it in the field, then Save. Recordings without those names rename as before.
+- c3ea5f1: In a Mac recording of a call with one other person, Them shows that person's name, marked Suggested, when the desktop app read the names from the call window. Save the name unchanged to keep it, rename it, or choose Go back to Them. A name you already gave is never replaced, and a call with more people suggests nothing. This also works while your TinyCloud space cannot be reached: a note that is so far only on this Mac shows the suggestion and offers the names, and what you choose is saved with the note when it reaches your space.
+- c3ea5f1: The web build leaves out the Record this call tile page, which only the Mac app uses. The Mac build keeps it.
+
+  Details: TC-4318
+
+- c3ea5f1: Who spoke when, the app side. In a Mac recording of a Google Meet call with three or more people, transcribed on the Mac with Whisper, each remote line now gets the person who said it: the app reads the speaking timeline the Mac app records from the meeting window, and labels each line "Them 1", "Them 2", and so on, by the person's place in the call. The note shows each label with that person's name, marked Suggested, also while the note is only on this Mac and your TinyCloud space cannot be reached; when the note is saved to your space, the names go onto it once. A name you give always wins, a suggestion you ended is not made again, and Undo and Go back work per label. Lines the rules cannot attribute for sure stay "Them". Two labels you give the same name read as one speaker. Nothing changes for Parakeet, for calls with one other person, or for recordings without a timeline. This needs the native timeline command; without it, transcripts keep "Them".
+- 8173d4d: A new account can save its first connector key under its own key. The first save finds no encryption network, so it asks once for the single permission that creates it (no read access, one hour at most), creates the network, then saves the key. If the approval is declined or fails, nothing is stored and the usual save error is shown.
+
+  Details: TC-4243
+
+- c3ea5f1: On the Mac app, a saved voice note whose audio stays on this Mac plays that audio on its page again, and its row says "Audio stays on this Mac". Before, the page said "The audio for this note isn't on this device." for any such note without a transcript (for example a recording the app stopped at its limit whose transcription failed), although the audio was on the Mac.
+- c3ea5f1: A Mac voice note says what it is doing from Stop to its transcript. While its audio is finished on the Mac it shows "Finishing the recording…", never "Waiting to upload" or a transcript that waits for your space. Capture shows "Saving to your TinyCloud space…" while the note saves. A note with no Whisper model shows that it waits for a model and offers Get model, never "Couldn't transcribe". A reload shows the same state again, and the note's transcription starts only once.
+- c3ea5f1: Stopping a long recording on the Mac no longer loads the whole recording into the app. The saved receipt reads none of the audio: Play shows once the Mac has finished the file, and the audio is read when you press Play, one part at a time, so the app's memory stays the same however long the recording is. When the receipt closes by itself, the recording's own page shows in its place, never the screen the recording began on, even while your TinyCloud space cannot be reached.
+- 40c7751: When a message gets no reply because the account is out of credits, the chat says so: "You're out of credits on the Free plan, so this message got no reply." When the billing status has the reset time, the message also says when credits reset. Without the plan name it says "your plan". A reply that was partly written keeps the existing limit text. The pricing dialog opens for the Free plan and for plans that have an upgrade, and stays closed on the top plan.
+
+  Details: TC-4312
+
+- c3ea5f1: A voice note recorded on the Mac while your TinyCloud space can't be reached stays on the Mac, marked as not in your space yet, and saves by itself once the space answers again. Capture no longer shows the storage service's raw error code for it.
+- c3ea5f1: On the Mac, transcript lines of a call recorded with "Read names from the call window" get the speaker's name when the other people's cameras are on too. A line said right at a change of speaker stays "Them" when the app cannot tell whose it is.
+
+## 0.22.0-beta.1
+
+### Patch Changes
+
+- 8173d4d: A new account can save its first connector key under its own key. The first save finds no encryption network, so it asks once for the single permission that creates it (no read access, one hour at most), creates the network, then saves the key. If the approval is declined or fails, nothing is stored and the usual save error is shown.
+
+  Details: TC-4243
+
+- 40c7751: When a message gets no reply because the account is out of credits, the chat says so: "You're out of credits on the Free plan, so this message got no reply." When the billing status has the reset time, the message also says when credits reset. Without the plan name it says "your plan". A reply that was partly written keeps the existing limit text. The pricing dialog opens for the Free plan and for plans that have an upgrade, and stays closed on the top plan.
+
+  Details: TC-4312
+
+## 0.22.0-beta.0
+
+### Minor Changes
+
+- c3ea5f1: New setting on the Mac: Read names from the call window, in Capture settings under Meetings. It is off until you turn it on. While a recording of both sides of a call runs, TinyCloud One reads the names of the people in the call from the Google Meet or Zoom window and saves them with the note: they are offered when you rename a speaker, and with one other person in the call that name is suggested for Them. It needs Also record this Mac's audio, so it sits under that switch: turning it on turns that on too, and turning that off (or choosing Mic only for your first recording) turns it off. macOS asks for Accessibility permission; until it is allowed the setting shows Open System Settings. Saving a note never waits for the names. Nothing changes on the web or on phones.
+- c3ea5f1: The Mac's Record this call tile now stays while the recording it started runs, as a small bar: a red dot that pulses gently (still and dimmed while paused), the elapsed time, and Stop, which stops and saves the note as Stop in the app does. A newly shown tile ignores clicks for half a second, so a click meant for the call does not start a recording. The app answers the tile's Stop only while a recording is live or paused, through the recorder's own Stop.
+- c3ea5f1: New setting on the Mac: Offer to record when a call starts, the first row of Meetings in Capture settings. It is on by default. When a call starts, a small tile offers to record it: Start begins a recording, Not now closes the tile for that call. The tile is its own small page (call-prompt.html), so it does not load the app. The setting stays hidden until the desktop app supports it. Nothing changes on the web or on phones.
+- c3ea5f1: The Mac app can transcribe a stopped recording with Parakeet TDT 0.6B v3, on the Mac, as an option next to the Whisper models. It is never selected by default. Capture settings lists it after the Whisper models, with Get, progress and select like them. It runs inside the app on Core ML, and no Whisper server starts for it. The download is about 674 MB from Hugging Face: the model and a speaker-diarization bundle that the runtime needs. The files go to ~/Library/Caches/qwen3-speech. A stereo recording keeps Me and Them apart, but their order inside each 30-second stretch is approximate. With a Whisper model selected, nothing changes. Nothing changes on the web or on phones.
+
+### Patch Changes
+
+- c3ea5f1: After your TinyCloud space has been unreachable, no Activity line says "Needs attention" without a way to act on it. A transcript that is already saved in your space shows nothing when the app cannot check it there; the app checks again by itself. A transcript the app could not write to your space has Try again, which writes the transcript already on your device and never transcribes the note again. Such a write is also tried again by itself while you are signed in, and shows as Retrying with Try now until your space takes it. While a save is waiting for its next try, its audio upload line no longer says "Needs attention".
+- c3ea5f1: Renaming a speaker in a Mac recording of a call offers the names of the people in the call, when the desktop app read them from the call window: the other people for Them, and your own name for Me. Tap a name to put it in the field, then Save. Recordings without those names rename as before.
+- c3ea5f1: In a Mac recording of a call with one other person, Them shows that person's name, marked Suggested, when the desktop app read the names from the call window. Save the name unchanged to keep it, rename it, or choose Go back to Them. A name you already gave is never replaced, and a call with more people suggests nothing. This also works while your TinyCloud space cannot be reached: a note that is so far only on this Mac shows the suggestion and offers the names, and what you choose is saved with the note when it reaches your space.
+- c3ea5f1: The web build leaves out the Record this call tile page, which only the Mac app uses. The Mac build keeps it.
+
+  Details: TC-4318
+
+- c3ea5f1: Who spoke when, the app side. In a Mac recording of a Google Meet call with three or more people, transcribed on the Mac with Whisper, each remote line now gets the person who said it: the app reads the speaking timeline the Mac app records from the meeting window, and labels each line "Them 1", "Them 2", and so on, by the person's place in the call. The note shows each label with that person's name, marked Suggested, also while the note is only on this Mac and your TinyCloud space cannot be reached; when the note is saved to your space, the names go onto it once. A name you give always wins, a suggestion you ended is not made again, and Undo and Go back work per label. Lines the rules cannot attribute for sure stay "Them". Two labels you give the same name read as one speaker. Nothing changes for Parakeet, for calls with one other person, or for recordings without a timeline. This needs the native timeline command; without it, transcripts keep "Them".
+- c3ea5f1: On the Mac app, a saved voice note whose audio stays on this Mac plays that audio on its page again, and its row says "Audio stays on this Mac". Before, the page said "The audio for this note isn't on this device." for any such note without a transcript (for example a recording the app stopped at its limit whose transcription failed), although the audio was on the Mac.
+- c3ea5f1: A Mac voice note says what it is doing from Stop to its transcript. While its audio is finished on the Mac it shows "Finishing the recording…", never "Waiting to upload" or a transcript that waits for your space. Capture shows "Saving to your TinyCloud space…" while the note saves. A note with no Whisper model shows that it waits for a model and offers Get model, never "Couldn't transcribe". A reload shows the same state again, and the note's transcription starts only once.
+- c3ea5f1: Stopping a long recording on the Mac no longer loads the whole recording into the app. The saved receipt reads none of the audio: Play shows once the Mac has finished the file, and the audio is read when you press Play, one part at a time, so the app's memory stays the same however long the recording is. When the receipt closes by itself, the recording's own page shows in its place, never the screen the recording began on, even while your TinyCloud space cannot be reached.
+- c3ea5f1: A voice note recorded on the Mac while your TinyCloud space can't be reached stays on the Mac, marked as not in your space yet, and saves by itself once the space answers again. Capture no longer shows the storage service's raw error code for it.
+- c3ea5f1: On the Mac, transcript lines of a call recorded with "Read names from the call window" get the speaker's name when the other people's cameras are on too. A line said right at a change of speaker stays "Them" when the app cannot tell whose it is.
+
+## 0.21.0
+
+### Minor Changes
+
+- fb2835d: TinyCloud One can send bug reports: a Settings row, and an offer after a screenshot that opens a sheet with a note field and the app's own screenshot attached. The report is redacted on the device, signed with the session key and sent to the feedback service. iPhone and Android 14+ notice screenshots; the browser and the Mac app notice screenshot keys.
+
+  Ships off because the feedback service has no route for these reports (`/reports/app`); turn it on by setting `VITE_REPORT_BUG=true` once that route is live.
+
+  Details: TC-3716
+
+- 97fad45: Prepare an option to keep bot reads on while you’re away.
+
+  Details: TC-4000
+
+- d6c02d5: TrustBot can answer agents that message its owner through Courier. Owners pair each agent in TrustBot's settings, and can unpair it there. TrustBot answers only with what the owner lets it read. It doesn't take requests or tasks over Courier.
+
+  TrustBot keeps Courier conversations encrypted. It keeps each message for up to 30 days, the latest 200 messages in each conversation and the 50 most recently active conversations, and deletes older ones. Owners can delete any of these conversations. What TrustBot reads to answer isn't kept, apart from what it writes in its answers.
+
+  Owners can keep any chat out of what TrustBot reads, from TrustBot's settings.
+
+  TrustBot can read the owner's Telegram chats that Inbox collects, when the owner turns on the Telegram read area.
+
+  Details: TC-4058
+
+### Patch Changes
+
+- bc720ae: The agent guides and skills on /agents follow the reviewed guides at prompts 0d899a16. The guides say the CLI doesn't run when its version command fails, apps paths fall back to the served helpers when no local skill is installed, the delegation guide uses the public node, and the skills index labels the meetings skill "TinyCloud One meetings".
+
+  Details: TC-3278
+
+- a275b28: The agent guides are built from a reviewed set of TinyCloud guides.
+
+  Details: TC-3278
+
+- d7ab4e3: When Connectors' permission step is turned down in part, the message names the part: the unlock permission, the three key folders or both.
+
+  Details: TC-4209
+
+- 7e92a64: Sign-in leaves out access to the Health Log and Recipes sample databases, which TinyCloud One never opens. The check for a missing TinyCloud account reads a path inside TinyChat's own threads folder. Older sign-ins that carry the two databases are accepted.
+
+  Details: TC-4244
+
+- 7d5ef02: Home feed card titles hide links and tokens. A link in a title shows as "[link]". A bearer token, a JWT or a long hex or base64 string shows as "[hidden]". A message relayed over Courier is titled by a short summary of its first line, or "New message" when that line held only links or tokens. This applies to titles only.
+
+  Details: TC-4253
+
+- 960f332: A Granola CSV that cannot be read shows one error line, with no second line about no meetings.
+
+  Details: TC-4211
+
+- 97fad45: Show the owner a daily summary of bot reads while they were away, with allowed and refused counts by area and kind of read.
+
+  Details: TC-4000
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
+- ab741ae: Opening a bot's chat asks only for that chat's history key. Earlier history moves to that key when you choose "Move earlier history".
+
+  Details: TC-4225
+
+## 0.21.0-beta.10
+
+### Patch Changes
+
+- d7ab4e3: When Connectors' permission step is turned down in part, the message names the part: the unlock permission, the three key folders or both.
+
+  Details: TC-4209
+
+## 0.21.0-beta.9
+
+### Patch Changes
+
+- 7e92a64: Sign-in leaves out access to the Health Log and Recipes sample databases, which TinyCloud One never opens. The check for a missing TinyCloud account reads a path inside TinyChat's own threads folder. Older sign-ins that carry the two databases are accepted.
+
+  Details: TC-4244
+
+## 0.21.0-beta.8
+
+### Minor Changes
+
+- fb2835d: TinyCloud One can send bug reports: a Settings row, and an offer after a screenshot that opens a sheet with a note field and the app's own screenshot attached. The report is redacted on the device, signed with the session key and sent to the feedback service. iPhone and Android 14+ notice screenshots; the browser and the Mac app notice screenshot keys.
+
+  Ships off because the feedback service has no route for these reports (`/reports/app`); turn it on by setting `VITE_REPORT_BUG=true` once that route is live.
+
+  Details: TC-3716
+
+## 0.21.0-beta.7
+
+### Patch Changes
+
+- 960f332: A Granola CSV that cannot be read shows one error line, with no second line about no meetings.
+
+  Details: TC-4211
+
+## 0.21.0-beta.6
+
+### Patch Changes
+
+- bc720ae: The agent guides and skills on /agents follow the reviewed guides at prompts 0d899a16. The guides say the CLI doesn't run when its version command fails, apps paths fall back to the served helpers when no local skill is installed, the delegation guide uses the public node, and the skills index labels the meetings skill "TinyCloud One meetings".
+
+  Details: TC-3278
+
+## 0.21.0-beta.5
+
+### Patch Changes
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
+## 0.21.0-beta.4
+
+### Minor Changes
+
+- 97fad45: Prepare an option to keep bot reads on while you’re away.
+
+  Details: TC-4000
+
+### Patch Changes
+
+- 97fad45: Show the owner a daily summary of bot reads while they were away, with allowed and refused counts by area and kind of read.
+
+  Details: TC-4000
+
+## 0.21.0-beta.3
+
+### Patch Changes
+
+- 7d5ef02: Home feed card titles hide links and tokens. A link in a title shows as "[link]". A bearer token, a JWT or a long hex or base64 string shows as "[hidden]". A message relayed over Courier is titled by a short summary of its first line, or "New message" when that line held only links or tokens. This applies to titles only.
+
+  Details: TC-4253
+
+## 0.21.0-beta.2
+
+### Patch Changes
+
+- ab741ae: Opening a bot's chat asks only for that chat's history key. Earlier history moves to that key when you choose "Move earlier history".
+
+  Details: TC-4225
+
+## 0.21.0-beta.1
+
+### Minor Changes
+
+- d6c02d5: TrustBot can answer agents that message its owner through Courier. Owners pair each agent in TrustBot's settings, and can unpair it there. TrustBot answers only with what the owner lets it read. It doesn't take requests or tasks over Courier.
+
+  TrustBot keeps Courier conversations encrypted. It keeps each message for up to 30 days, the latest 200 messages in each conversation and the 50 most recently active conversations, and deletes older ones. Owners can delete any of these conversations. What TrustBot reads to answer isn't kept, apart from what it writes in its answers.
+
+  Owners can keep any chat out of what TrustBot reads, from TrustBot's settings.
+
+  TrustBot can read the owner's Telegram chats that Inbox collects, when the owner turns on the Telegram read area.
+
+  Details: TC-4058
+
+## 0.20.5-beta.0
+
+### Patch Changes
+
+- a275b28: The agent guides are built from a reviewed set of TinyCloud guides.
+
+  Details: TC-3278
+
+## 0.20.4
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
+- 4066d1f: Show a message and a link to tinycloud.one when someone signs in on the phone app with no TinyCloud account yet, instead of a generic failure.
+
+  Details: TC-4109
+
+## 0.20.4-beta.1
+
+### Patch Changes
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
+## 0.20.4-beta.0
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+- 4066d1f: Show a message and a link to tinycloud.one when someone signs in on the phone app with no TinyCloud account yet, instead of a generic failure.
+
+  Details: TC-4109
+
+## 0.20.3
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+- 6fadb67: On the web, connector keys are saved with your account's main key.
+
+  Details: TC-3284
+
+- eae1f49: Choose one thing to try from your TinyCloud setup. Your choice waits in Feed for your agent's next check.
+
+  Details: TC-3302
+
+## 0.20.3-beta.3
+
+### Patch Changes
+
+- 6fadb67: On the web, connector keys are saved with your account's main key.
+
+  Details: TC-3284
+
+## 0.20.3-beta.2
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+## 0.20.3-beta.1
+
+### Patch Changes
+
+- 1844202: Production web saves each connector key under its own encryption key, so a service you approve for one key can read only that key.
+
+  Details: TC-3284
+
+## 0.20.3-beta.0
+
+### Patch Changes
+
+- eae1f49: Choose one thing to try from your TinyCloud setup. Your choice waits in Feed for your agent's next check.
+
+  Details: TC-3302
+
+## 0.20.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+- b3cbf13: Web sign-in and Connectors can renew access with your approval in OpenKey. When the approval includes access to your secrets, each renewal lasts up to seven days.
+
+  Details: TC-4000
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+- afc5b2e: The Contacts tile no longer appears in One Apps.
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+- cab6b24: Open the agent setup handoff in TinyCloud One with a connection summary, an app list and prompts to try in your agent chat.
+
+  Details: TC-3302
+
+## 0.20.2-beta.6
+
+### Patch Changes
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+## 0.20.2-beta.5
+
+### Patch Changes
+
+- cab6b24: Open the agent setup handoff in TinyCloud One with a connection summary, an app list and prompts to try in your agent chat.
+
+  Details: TC-3302
+
+## 0.20.2-beta.4
+
+### Patch Changes
+
+- 472f192: Desktop sign-in can renew access with your approval in OpenKey. Each renewal of access to your secrets lasts up to seven days.
+
+  Details: TC-4000
+
+## 0.20.2-beta.3
+
+### Patch Changes
+
+- b3cbf13: Web sign-in and Connectors can renew access with your approval in OpenKey. When the approval includes access to your secrets, each renewal lasts up to seven days.
+
+  Details: TC-4000
+
 ## 0.20.2-beta.2
 
 ### Patch Changes

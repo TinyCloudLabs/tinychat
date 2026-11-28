@@ -9,6 +9,7 @@ import { HomeCardView } from "./FeedView";
 import { CARD_TYPES, courierMessage, parseCardType, safeUrl, type FeedCard } from "./feedData";
 import type { HeldAnswerOutcome, HomeFeedEntry, HomeFeedSnapshot, HomeFeedSource } from "./feedStoreTypes";
 import type { FeedCardLink } from "./feedCardLink";
+import { isSetupChoice, isSetupChoiceIssuance } from "./setupChoice";
 import { DROP_LABEL, SitrepCard } from "./SitrepCard";
 import { typedContexts, type TypedCardContext } from "./sitrepProjection";
 import { humanFeedReference, homeFeedKey, homeGroupScope } from "./feedIdentity";
@@ -21,6 +22,7 @@ import { actionClass, CardDetails, footActionClass } from "./CardActions";
 import { isOwnerAction, ownerClosure } from "./ownerActions";
 import { CompactCard, type Replies } from "./CompactCard";
 import { cardLead } from "./cardLead";
+import { shownTitle } from "./cardTitle";
 import { cardStatus } from "./cardStatus";
 import { agentProfile } from "./AgentMark";
 import { HistoryTimeline, historyFromEntry } from "./HistoryTimeline";
@@ -52,7 +54,7 @@ import { cardGroup, cardPriority, compareWaiting, DUE_WINDOW_MS, findSecrets, gr
 import { HOME_EMPTY_BODY, HOME_EMPTY_CHAT, HOME_EMPTY_HOW, HOME_EMPTY_TITLE, NAV_LABEL_HOME } from "@/lib/homeStrings";
 import { markFeedFresh } from "@/lib/localFirst/requestLanes";
 import { AgentPrompt } from "@/home/AgentPromptCard";
-import { FEED_CARD_LINK_COPY, FEED_SKILL_URL } from "./strings";
+import { FEED_CARD_LINK_COPY, FEED_SKILL_URL, liveUpdatesOff } from "./strings";
 
 /** How long "Sent to <agent>" stays once an answer's held write has landed. */
 const SENT_NOTE_MS = 1400;
@@ -179,6 +181,7 @@ function ResponseStatus({ entry, focusOnMount }: { entry: HomeFeedEntry; focusOn
   const label = choice && optionText(choice.label);
   return <AnsweredPanel focusOnMount={focusOnMount}>
     <p>{label ? <>You chose <b className="font-semibold">{label}</b>.</> : "You answered."}{received && ` ${agent} got it.`}{result && (result.phase === "succeeded" ? ` ${agent} finished it.` : ` ${agent} couldn't finish it.`)}</p>
+    {isSetupChoice(entry) && !received && !result && <p role="status">Queued. Your agent will see this next time it checks.</p>}
     {response.text && <p className="whitespace-pre-wrap">{response.text}</p>}
     {typeof detail === "string" && <p className="whitespace-pre-wrap">{detail}</p>}
   </AnsweredPanel>;
@@ -259,6 +262,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
   const pendingResponse = useRef<{ key: string; response: NewFeedResponse } | null>(null);
   const pendingMessage = useRef<{ text: string; message: NewFeedMessage } | null>(null);
   const card = entry.state.card;
+  const setupChoice = isSetupChoice(entry);
   const info = !card.needsResponse;
   // Writes go to the answered issuance when there is one, otherwise to the card as it is now.
   const target = answered ?? entry;
@@ -269,7 +273,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
   async function save(chosen: string) {
     const { target, saved, text } = live.current;
     const own = chosen === OWN_OPTION.id;
-    if (saving || (own && !text.trim())) return;
+    if (saving || (own && !text.trim()) || (setupChoice && (saved || own || !isSetupChoiceIssuance(target)))) return;
     setSaving(true); setError(null); setFailed(null);
     const card = target.state.card;
     // Retain the response identity across a failed/ambiguous write. A retry of the same answer to the same
@@ -283,10 +287,10 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     };
     pendingResponse.current = { key, response };
     try {
-      // Held until confirmed: a page that closes before this write lands sends it at the next launch.
-      const result = await retryAfterHide(() => source.saveResponse(target, response, undefined, { hold: true }), () => !!source.holdsAnswer?.(target, response.responseId));
+      // Ordinary answers can be held for the next launch. Setup choices confirm against their one durable slot.
+      const result = await retryAfterHide(() => source.saveResponse(target, response, undefined, { hold: !setupChoice }), () => !!source.holdsAnswer?.(target, response.responseId));
       onSaved(target, result);
-      wait?.sent();
+      if (!setupChoice) wait?.sent();
       pendingResponse.current = null;
       setText(""); setChoice(undefined); setOwnOpen(false); setFollowup(false); setJustSaved(true);
     } catch {
@@ -307,7 +311,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
       return true;
     } catch { return false; }
   }
-  const asking = !info && (!saved || followup);
+  const asking = !info && (!saved || followup) && (!setupChoice || isSetupChoiceIssuance(entry));
   function choose(id: string, label: string) {
     if (stale || saving || countdown.pending) return;
     setChoice(id);
@@ -319,7 +323,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     countdown.start(NOT_SENT_COPY.yourAnswer, () => void save(OWN_OPTION.id));
   }
   function undo() { countdown.undo(); setChoice(undefined); }
-  useAnnounceWait(countdown.pending, undo, saving);
+  useAnnounceWait(setupChoice ? null : countdown.pending, undo, !setupChoice && saving);
   const timing = cardTiming(entry);
   const timingLine = [timing.deadline && `Due ${shortTime(timing.deadline, now)}`, timing.expiresAt && `Matters until ${shortTime(timing.expiresAt, now)}`, timing.priority !== undefined && `Priority P${timing.priority}`].filter(Boolean).join(" · ");
   const thread = <CardConversation lines={plainConversation(entry, revisions)} to={source.sendMessage ? entry.source.label : undefined} stale={stale}
@@ -331,7 +335,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     {asking && followup && <p className="text-[13px] text-muted-foreground">A new answer replaces your earlier one. It can't undo what {entry.source.label} already did.</p>}
     {asking && <AnswerOptions options={card.choices ?? []} pending={countdown.pending && choice ? { choiceId: choice, seconds: countdown.pending.seconds } : null}
       saving={saving ? choice : undefined} chosen={failed ? choice : undefined} disabled={stale} onChoose={choose} onUndo={undo}
-      own={{ open: ownOpen, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={stale || !!countdown.pending || saving} onText={(value) => { setText(value); pendingResponse.current = null; }} onSend={sendOwn} onCancel={() => { setText(""); setOwnOpen(false); pendingResponse.current = null; }}
+      own={setupChoice ? undefined : { open: ownOpen, onOpen: setOwnOpen, box: <OwnAnswerBox text={text} disabled={stale || !!countdown.pending || saving} onText={(value) => { setText(value); pendingResponse.current = null; }} onSend={sendOwn} onCancel={() => { setText(""); setOwnOpen(false); pendingResponse.current = null; }}
         state={choice === OWN_OPTION.id ? (saving ? "sending" : failed ? "error" : "idle") : "idle"} onRetry={() => void save(OWN_OPTION.id)} /> }} />}
     {thread}
     {failed ? <AnswerFailedLine held={!!source.holdsAnswer?.(failed.target, failed.responseId)} /> : error && <ErrorLine>{error}</ErrorLine>}
@@ -341,7 +345,7 @@ function AnswerForm({ entry, drafts, draftKey, answered, revisions, source, now,
     <div className="border-t border-border pt-2"><CardDetails card={entry.state.card} agent={entry.source.label} publisher={entry.source}
       close={closed || stale ? undefined : info ? { kind: "acknowledge", onTap: () => foot.onClose("acknowledge") } : attention ? { kind: "drop", onTap: () => foot.onClose("drop") } : undefined}
       actions={<>
-        {!info && saved && !asking && <button type="button" className={footActionClass} onClick={() => setFollowup(true)}>Change answer</button>}
+        {!setupChoice && !info && saved && !asking && <button type="button" className={footActionClass} onClick={() => setFollowup(true)}>Change answer</button>}
         {followup && <button type="button" className={footActionClass} disabled={saving} onClick={() => { setFollowup(false); setText(""); setOwnOpen(false); }}>Keep my answer</button>}
         {foot.wake ?? ((info ? !closed : attention) && <button type="button" aria-expanded={later} onClick={() => setLater(!later)} className={footActionClass}>{laterWord}</button>)}
       </>}
@@ -551,7 +555,7 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
           if (next.relatedEntries) next.relatedEntries = next.relatedEntries.map(reconcile);
           if (next.historicalEntries) next.historicalEntries = next.historicalEntries.map(reconcile);
           loaded = true;
-          setSnapshot(next); setNetworkLoaded(true); setClock(Date.now()); setError(next.connectionError ? { lead: "You're offline.", text: "Live updates are off, so these cards may be out of date." } : null);
+          setSnapshot(next); setNetworkLoaded(true); setClock(Date.now()); setError(next.connectionError ? liveUpdatesOff(navigator.onLine !== false) : null);
           markFeedFresh();
           // The first load registered the agents: answers held when the page last closed go now.
           if (!flushed && source.flushHeldAnswers) {
@@ -897,7 +901,9 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
   // note, but only after a network load that reached the feed: the device's earlier copy or a failed load decides nothing.
   useEffect(() => {
     if (!linked || !snapshot || handledVisit.current === linked.visit) return;
-    const matches = snapshot.entries.filter((candidate) => candidate.state.card.cardId.toLowerCase() === linked.cardId);
+    if (linked.setupChoice && (!networkLoaded || snapshot.connectionError)) return;
+    const matches = snapshot.entries.filter((candidate) => candidate.state.card.cardId.toLowerCase() === linked.cardId
+      && (!linked.setupChoice || isSetupChoiceIssuance(candidate)));
     if (matches.length !== 1 && (!networkLoaded || snapshot.connectionError)) return;
     handledVisit.current = linked.visit;
     const found = matches.length === 1 ? matches[0] : undefined;
@@ -1072,11 +1078,12 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
     if (record) return record.kind === "ask" ? record.options.length : 0;
     return isTypedPayload(entry) ? 0 : entry.state.card.choices?.length ?? 0;
   }
-  /** The card's post: its record's, else the summary a plain card carries. Absent when the agent wrote none. */
+  /** The card's post: its record's, else the summary a plain card carries. Absent when the agent wrote none. It stands in for the title, so it is shown as one (shownTitle). */
   function postOf(entry: HomeFeedEntry): string | undefined {
     const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
     const summary = entry.state.card.payload?.summary;
-    return record?.post?.trim() || (typeof summary === "string" && summary.trim() ? summary : undefined);
+    const post = record?.post?.trim() || (typeof summary === "string" && summary.trim() ? summary : undefined);
+    return post ? shownTitle(post) : undefined;
   }
   /** A card's own line: what was chosen once it is answered, when it comes back, else its post, else (a ship card) what moved, else its title. */
   function describe(entry: HomeFeedEntry) {
@@ -1091,7 +1098,8 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
     const post = postOf(entry);
     if (post) return post;
     const record = parseSitrepCardPayload(entry.state.card.payload?.sitrep)?.record;
-    return (record && cardLead(record)) ?? entry.state.card.title;
+    const lead = record && cardLead(record);
+    return lead ? shownTitle(lead) : entry.state.card.title;
   }
   const dueOf = (entry: HomeFeedEntry) => { const deadline = timingOf(entry).deadline; return deadline && attention(entry) ? deadline : undefined; };
   /**
@@ -1353,7 +1361,7 @@ export function HomeFeedEntries({ source, ask, linked, finishSetup }: { source: 
       {finishSetup}
       {error && <div role="alert" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <TriangleAlertIcon aria-hidden className="mt-px size-5 shrink-0 text-warning" />
-        <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => refreshRef.current()} className="mt-2 min-h-11 underline">Try again</button></div>
+        <div className="min-w-0"><p><b className="font-semibold">{error.lead}</b> {error.text}</p><button type="button" onClick={() => { if (snapshot?.connectionError) source.reconnect?.(); refreshRef.current(); }} className="mt-2 min-h-11 underline">Try again</button></div>
       </div>}
       {linked && missedVisit === linked.visit && <div role="status" className="mb-4 flex items-start gap-3 rounded-2xl bg-card px-4 py-3 text-sm leading-[1.45] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
         <InfoIcon aria-hidden className="mt-px size-5 shrink-0 text-muted-foreground" />

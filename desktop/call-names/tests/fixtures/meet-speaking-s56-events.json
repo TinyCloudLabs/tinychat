@@ -1,0 +1,300 @@
+{
+ "events": [
+  {
+   "kind": "turn_begin",
+   "t": 3.097,
+   "tile": 0,
+   "turn": 1
+  },
+  {
+   "kind": "microphone_on",
+   "t": 5.239,
+   "tile": 0,
+   "turn": 1
+  },
+  {
+   "kind": "speech_start",
+   "t": 7.245,
+   "tile": 0,
+   "turn": 1
+  },
+  {
+   "kind": "speech_end",
+   "t": 17.729,
+   "tile": 0,
+   "turn": 1
+  },
+  {
+   "kind": "microphone_off",
+   "t": 17.747,
+   "tile": 0,
+   "turn": 1
+  },
+  {
+   "kind": "turn_end",
+   "t": 27.757,
+   "tile": 0,
+   "turn": 1
+  },
+  {
+   "kind": "turn_begin",
+   "t": 27.763,
+   "tile": 1,
+   "turn": 2
+  },
+  {
+   "kind": "microphone_on",
+   "t": 29.955,
+   "tile": 1,
+   "turn": 2
+  },
+  {
+   "kind": "speech_start",
+   "t": 31.961,
+   "tile": 1,
+   "turn": 2
+  },
+  {
+   "kind": "speech_end",
+   "t": 42.427,
+   "tile": 1,
+   "turn": 2
+  },
+  {
+   "kind": "microphone_off",
+   "t": 42.465,
+   "tile": 1,
+   "turn": 2
+  },
+  {
+   "kind": "turn_end",
+   "t": 52.477,
+   "tile": 1,
+   "turn": 2
+  },
+  {
+   "kind": "turn_begin",
+   "t": 52.494,
+   "tile": 0,
+   "turn": 3
+  },
+  {
+   "kind": "microphone_on",
+   "t": 54.855,
+   "tile": 0,
+   "turn": 3
+  },
+  {
+   "kind": "speech_start",
+   "t": 56.86,
+   "tile": 0,
+   "turn": 3
+  },
+  {
+   "kind": "speech_end",
+   "t": 67.336,
+   "tile": 0,
+   "turn": 3
+  },
+  {
+   "kind": "microphone_off",
+   "t": 67.365,
+   "tile": 0,
+   "turn": 3
+  },
+  {
+   "kind": "turn_end",
+   "t": 77.37,
+   "tile": 0,
+   "turn": 3
+  },
+  {
+   "kind": "turn_begin",
+   "t": 77.372,
+   "tile": 1,
+   "turn": 4
+  },
+  {
+   "kind": "microphone_on",
+   "t": 79.534,
+   "tile": 1,
+   "turn": 4
+  },
+  {
+   "kind": "speech_start",
+   "t": 81.539,
+   "tile": 1,
+   "turn": 4
+  },
+  {
+   "kind": "speech_end",
+   "t": 91.939,
+   "tile": 1,
+   "turn": 4
+  },
+  {
+   "kind": "microphone_off",
+   "t": 92.044,
+   "tile": 1,
+   "turn": 4
+  },
+  {
+   "kind": "turn_end",
+   "t": 102.05,
+   "tile": 1,
+   "turn": 4
+  },
+  {
+   "kind": "panel_open",
+   "t": 103.663,
+   "tile": null,
+   "turn": 4
+  },
+  {
+   "kind": "turn_begin",
+   "t": 106.664,
+   "tile": 0,
+   "turn": 5
+  },
+  {
+   "kind": "microphone_on",
+   "t": 108.83,
+   "tile": 0,
+   "turn": 5
+  },
+  {
+   "kind": "speech_start",
+   "t": 110.836,
+   "tile": 0,
+   "turn": 5
+  },
+  {
+   "kind": "speech_end",
+   "t": 121.828,
+   "tile": 0,
+   "turn": 5
+  },
+  {
+   "kind": "microphone_off",
+   "t": 121.831,
+   "tile": 0,
+   "turn": 5
+  },
+  {
+   "kind": "turn_end",
+   "t": 131.833,
+   "tile": 0,
+   "turn": 5
+  },
+  {
+   "kind": "turn_begin",
+   "t": 131.837,
+   "tile": 1,
+   "turn": 6
+  },
+  {
+   "kind": "microphone_on",
+   "t": 134.016,
+   "tile": 1,
+   "turn": 6
+  },
+  {
+   "kind": "speech_start",
+   "t": 136.023,
+   "tile": 1,
+   "turn": 6
+  },
+  {
+   "kind": "speech_end",
+   "t": 146.403,
+   "tile": 1,
+   "turn": 6
+  },
+  {
+   "kind": "microphone_off",
+   "t": 146.527,
+   "tile": 1,
+   "turn": 6
+  },
+  {
+   "kind": "turn_end",
+   "t": 156.528,
+   "tile": 1,
+   "turn": 6
+  },
+  {
+   "kind": "turn_begin",
+   "t": 156.529,
+   "tile": 0,
+   "turn": 7
+  },
+  {
+   "kind": "microphone_on",
+   "t": 158.723,
+   "tile": 0,
+   "turn": 7
+  },
+  {
+   "kind": "speech_start",
+   "t": 160.73,
+   "tile": 0,
+   "turn": 7
+  },
+  {
+   "kind": "speech_end",
+   "t": 171.202,
+   "tile": 0,
+   "turn": 7
+  },
+  {
+   "kind": "microphone_off",
+   "t": 171.236,
+   "tile": 0,
+   "turn": 7
+  },
+  {
+   "kind": "turn_end",
+   "t": 181.243,
+   "tile": 0,
+   "turn": 7
+  },
+  {
+   "kind": "turn_begin",
+   "t": 181.246,
+   "tile": 1,
+   "turn": 8
+  },
+  {
+   "kind": "microphone_on",
+   "t": 183.435,
+   "tile": 1,
+   "turn": 8
+  },
+  {
+   "kind": "speech_start",
+   "t": 185.441,
+   "tile": 1,
+   "turn": 8
+  },
+  {
+   "kind": "speech_end",
+   "t": 195.827,
+   "tile": 1,
+   "turn": 8
+  },
+  {
+   "kind": "microphone_off",
+   "t": 195.954,
+   "tile": 1,
+   "turn": 8
+  },
+  {
+   "kind": "turn_end",
+   "t": 205.964,
+   "tile": 1,
+   "turn": 8
+  }
+ ],
+ "kind": "speaking-events",
+ "v": 1
+}

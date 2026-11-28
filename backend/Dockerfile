@@ -13,8 +13,9 @@ ENV BUILD_REVISION=${BUILD_REVISION}
 # (packages/client/scripts/fix-web-wasm-init.mjs and
 # packages/server/scripts/fix-wasm-esm.mjs). The oven/bun image does not ship
 # Node, so install it before `bun install` or the install step fails.
+# libzstd1 is listed so the build takes the base image's fixed package (CVE-2026-124851, fixed in 1.5.7+dfsg-1+deb13u1).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends nodejs ca-certificates \
+  && apt-get install -y --no-install-recommends nodejs ca-certificates libzstd1 \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json bun.lock tsconfig.base.json turbo.json ./

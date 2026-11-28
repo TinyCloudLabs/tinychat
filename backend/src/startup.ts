@@ -26,7 +26,7 @@ const backendKv = (path: string, actions: string[]): PermissionEntry => ({
 export const TINYCHAT_BACKEND_MANIFEST: Manifest = {
   manifest_version: 1,
   app_id: "xyz.tinycloud.tinychat.backend",
-  name: "TinyChat backend",
+  name: "TinyCloud One backend",
   space: TINYCHAT_BACKEND_KV_PREFIX,
   prefix: "",
   defaults: false,
@@ -52,6 +52,12 @@ export const TINYCHAT_BACKEND_MANIFEST: Manifest = {
     backendKv("bots/registry/", ["get", "put", "list"]),
     // TrustBot's read grants, sealed (trustbot-reads/grants.ts).
     backendKv("trustbot/read-grants/", ["get", "put", "del"]),
+    // TrustBot's Telegram read grants, sealed apart from the others (trustbot-reads/setup.ts).
+    backendKv("trustbot/telegram-read-grants/", ["get", "put", "del"]),
+    // TrustBot's read-attempt audit rows and their 90-day purge (trustbot-reads/audit.ts).
+    backendKv("trustbot/read-audit/", ["get", "put", "del", "list"]),
+    // TrustBot's standing-read approval metadata (trustbot-reads/standing-store.ts).
+    backendKv("trustbot/standing-read-approvals/", ["get", "put", "list"]),
     // Exo mirror jobs, ledger, held jobs and source locks (exoBackendKv).
     backendKv("xyz.tinycloud.tinychat/exo/v1/", ["get", "put", "del", "list"]),
   ],

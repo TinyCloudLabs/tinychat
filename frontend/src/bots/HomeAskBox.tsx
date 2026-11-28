@@ -5,38 +5,51 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { ensureBotHistoryGrant, botHistoryEnabled } from "./historyGrant";
 import { authorizeBotHistory } from "./historyAuthorization";
 import { readBotHistory } from "./historyRead";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { openKeyFailureOf } from "../lib/authErrors";
+import { listThreads } from "../lib/threadStore";
 import { readHistoryNotice, type HistoryNotice } from "./historyNotice";
 import { AskBox } from "./AskBox";
-import { BotsError, botsApi, type BotsApi } from "./botsApi";
+import { botsApi, type BotsApi } from "./botsApi";
+import { botRosterApi } from "./botChatApi";
+import type { BotRosterApi } from "./botRosterApi";
+import { useBotsNav } from "./botsNav";
+import type { WorkingBot } from "./BotWorking";
 import { MainChat } from "./MainChat";
 import { isWorking, useMainChat } from "./useMainChat";
 import { AskCards } from "./AskCards";
-import { readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { ensureTrustBotReadGrant, readSettings, revokeReadGrant, setReadArea, signReadGrant } from "./trustbotReadGrant";
+import { readDeniedChatIds, setChatDenied } from "./chatReadAccessApi";
+import { listTelegramChats } from "./telegramChatReadAccess";
 import { newMainChat } from "./mainNewChat";
 import { SecretCards } from "./SecretCard";
 import { useAsks } from "./useAsks";
 
 const RETRY_MS = 60_000;
 
-/** History steps that fail because the session is gone. */
-const SESSION_GONE: Record<string, true> = { history_session_missing: true, history_session_expired: true, history_signed_out: true };
+type RosterRead = Pick<BotRosterApi, "list">;
 
-/** Authorizes Main's history before a send. A session that is gone reads as signed out, not as a reply that didn't come. */
-async function prepareHistory(tcw: TinyCloudWeb): Promise<void> {
-  if (!(await botHistoryEnabled())) return;
-  try {
-    await authorizeBotHistory(tcw, undefined, undefined, { includeLegacyNetwork: false });
-    await ensureBotHistoryGrant(tcw);
-  } catch (cause) {
-    const gone = (cause instanceof Error && Object.hasOwn(SESSION_GONE, cause.message)) || openKeyFailureOf(cause).kind === "session-ended";
-    throw gone ? new BotsError("signed_out") : cause;
-  }
+/**
+ * The main bot's icon as its owner picked it: the Chat slot's list when that is loaded, else one read of the roster.
+ * Until either answers, and where neither does, there is none and the chat shows the first icon.
+ */
+function useMainFace(roster: RosterRead | null): WorkingBot | undefined {
+  const listed = useBotsNav()?.bots.find((bot) => bot.key === "main")?.face;
+  const [read, setRead] = useState<WorkingBot>();
+  useEffect(() => {
+    if (!roster) return;
+    const controller = new AbortController();
+    void roster.list(controller.signal).then(({ bots }) => {
+      const main = bots.find((bot) => bot.key === "main");
+      if (main && !controller.signal.aborted) setRead({ key: main.key, name: main.name, shape: main.shape, colour: main.colour });
+    }, () => {});
+    return () => controller.abort();
+  }, [roster]);
+  return listed ?? read;
 }
 
-export function HomeAskBox({ api = botsApi, tcw, onReconnect }: { api?: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
+/** `roster` reads the main bot's icon. Without it only the real client reads one, so a stand-in `api` makes no other call. */
+export function HomeAskBox({ api = botsApi, roster = api === botsApi ? botRosterApi : null, tcw, onReconnect }: { api?: BotsApi; roster?: RosterRead | null; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
   const [working, setWorking] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
@@ -53,10 +66,11 @@ export function HomeAskBox({ api = botsApi, tcw, onReconnect }: { api?: BotsApi;
     void check();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [api]);
-  return working ? <MainAsk api={api} tcw={tcw} onReconnect={onReconnect} /> : null;
+  return working ? <MainAsk api={api} roster={roster} tcw={tcw} onReconnect={onReconnect} /> : null;
 }
 
-function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
+function MainAsk({ api, roster, tcw, onReconnect }: { api: BotsApi; roster: RosterRead | null; tcw?: TinyCloudWeb; onReconnect?: () => void }) {
+  const face = useMainFace(roster);
   const client = useMemo(() => !tcw ? api : { ...api, listMainMessages: async (signal?: AbortSignal) => {
     const local = await api.listMainMessages(signal);
     if (!(await botHistoryEnabled())) return local;
@@ -66,7 +80,8 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     return [...new Map([...archived, ...local].map(message => [message.id, message])).values()];
   } }, [api, tcw]);
   const refreshRequests = useRef<() => void>(() => {});
-  const chat = useMainChat(client, tcw ? () => prepareHistory(tcw) : undefined, () => refreshRequests.current());
+  // The chat is the signed-in account's for this page session, so leaving the Feed keeps its lines and its running turn.
+  const chat = useMainChat(client, undefined, () => refreshRequests.current(), true, { owner: api, account: tcw ? `${tcw.did}:${tcw.spaceId}` : "" });
   const [open, setOpen] = useState(false);
   const asks = useAsks(client, { open, onDecided: chat.sendAppReply, owner: tcw?.did });
   const refreshAsks = asks.refresh;
@@ -81,12 +96,26 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
       return stored;
     },
   }), [client, noteWeb]);
+  const [readRevision, setReadRevision] = useState(0);
+  const revokeOwnerRead = useCallback((cid: string) => {
+    if (!tcw) return Promise.reject(new Error("read_signed_out"));
+    return revokeReadGrant(tcw, cid);
+  }, [tcw]);
   const meetings = useMemo(() => tcw ? {
     readSettings,
     setReadArea,
     signReadGrant: (serviceDid: string, areas: Parameters<typeof signReadGrant>[2]) => signReadGrant(tcw, serviceDid, areas),
-    revokeReadGrant: (cid: string) => revokeReadGrant(tcw, cid),
-  } : undefined, [tcw]);
+    revokeReadGrant: revokeOwnerRead,
+    stopStandingArea: async (area: Parameters<typeof setReadArea>[0]) => {
+      const { stopStandingArea } = await import("./trustbotStandingReads");
+      await stopStandingArea(area, revokeOwnerRead);
+    },
+    chatReadAccess: {
+      listChats: async () => (await Promise.all([listThreads(tcw), listTelegramChats(tcw)])).flat(),
+      readDeniedChatIds,
+      setChatDenied,
+    },
+  } : undefined, [tcw, readRevision, revokeOwnerRead]);
   const clearChat = chat.clear;
   const newChat = useMemo(() => ({ start: () => newMainChat(), onStarted: () => { clearChat(); refreshAsks(); } }), [clearChat, refreshAsks]);
   // A turn is when Main asks: read the requests as it ends.
@@ -96,13 +125,22 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
     if (wasWorking.current && !working) refreshAsks();
     wasWorking.current = working;
   }, [working, refreshAsks]);
+  const loadChatHistory = chat.loadHistory;
+  const requestEarlier = useCallback(async () => (await import("./earlierHistoryRequest")).requestEarlierHistoryAccess(tcw!), [tcw]);
+  const earlierHistory = useMemo(() => tcw ? { bot: "main", request: requestEarlier, reload: loadChatHistory } : undefined, [tcw, requestEarlier, loadChatHistory]);
   const [notice, setNotice] = useState<HistoryNotice | null>(null);
   useEffect(() => {
     if (!tcw) return;
-    const renew = () => { void ensureBotHistoryGrant(tcw).then(() => readHistoryNotice()).then(setNotice, () => {}); };
+    let current = true;
+    const renew = () => {
+      void ensureBotHistoryGrant(tcw).then(() => readHistoryNotice()).then(setNotice, () => {});
+      void ensureTrustBotReadGrant(tcw).then(renewed => {
+        if (current && renewed) setReadRevision(revision => revision + 1);
+      });
+    };
     renew();
     const refresh = setInterval(renew, 30_000);
-    return () => clearInterval(refresh);
+    return () => { current = false; clearInterval(refresh); };
   }, [tcw]);
   useEffect(() => {
     if (!open || !tcw) return;
@@ -137,12 +175,18 @@ function MainAsk({ api, tcw, onReconnect }: { api: BotsApi; tcw?: TinyCloudWeb; 
         onSend={send}
         onRetry={chat.retry}
         onRetryHistory={() => void chat.loadHistory()}
+        onShowHistory={() => void chat.requestHistory()}
         notice={notice}
         onReconnect={onReconnect}
         webAccess={webAccess}
         meetings={meetings}
+        courier={Boolean(tcw)}
         asks={asks}
         newChat={newChat}
+        earlierHistory={earlierHistory}
+        face={face}
+        onNotNow={chat.notNow}
+        onAskAgain={chat.askAgain}
       />
     </>
   );

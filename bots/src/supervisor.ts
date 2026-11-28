@@ -41,6 +41,7 @@ Bun.serve({
     secret: cfg.serviceSecret, accounts: cfg.accounts, environment: "private", acceptLegacyOwnerHeader: cfg.acceptLegacyOwnerHeader,
     bots, manifest: new OwnerManifests(manifestRoot, cfg.maxBotsPerOwner),
     admit: cfg.admissionControlKey ? createAdmissionClient(cfg.egressRoot, cfg.admissionControlKey) : undefined,
+    courierControlSocket: process.env.BOTS_COURIER_ENABLED === "true" ? join(cfg.egressRoot, "control.sock") : undefined,
   }),
 });
 console.log(

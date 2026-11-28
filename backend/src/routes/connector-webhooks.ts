@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { createHash } from "node:crypto";
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { TinyCloudNode } from "@tinycloud/node-sdk";
 import * as serverPackage from "@tinyboilerplate/server";
@@ -1020,7 +1021,7 @@ function signatureValue(req: Request): string {
 // AUTHENTICATED COMPANIONS (§3.6, §4.4, §4.8, §5.4, §6.2)
 // ═══════════════════════════════════════════════════════════════════════
 //
-// `GET/POST/DELETE /config`, `GET /pending`, `POST /drain`, `POST/DELETE /purged`.
+// `GET/POST/DELETE /config`, `GET /pending`, `POST /drain`, `POST/DELETE /purged`, `POST/DELETE /deleted`.
 //
 // These mount in the NORMAL window (index.ts `:194+`), behind the global JSON parser, CSRF,
 // `authMiddleware` and their OWN rate-limit bucket — never `globalLimiter`'s 120/15min, which
@@ -1028,14 +1029,14 @@ function signatureValue(req: Request): string {
 // would be matched by the public `POST /:source/:token` mount in the raw window, arrive as a
 // Buffer, and be keyed into a token bucket that has no token.
 //
-// The disabled marker and the purge ledger live here rather than in a service of their own
-// because §2.3's file table is authoritative for this build and lists neither; both are state
-// these routes own and the drain (W5) only reads.
+// Disabled markers, purge ledgers, and individual deletion markers live here because these
+// authenticated routes own their lifecycle; the importer and drain consult them.
 
 /** §5.1-shaped, backend-own keys — auto-prefixed under `ops.tinychat.backend`, NOT `xyz.tinycloud.tinychat/…`. */
 export const DISABLED_KEY_PREFIX = "webhooks/disabled";
 export const PURGE_LEDGER_KEY_PREFIX = "webhooks/purged";
 export const CORRUPT_PURGED_KEY_PREFIX = "webhooks/corrupt/purged";
+export const DELETED_MEETING_KEY_PREFIX = "webhooks/deleted";
 
 /** §6.2: `recentIds` is forensics only and stays capped; `purgedThrough` is what protects. */
 export const PURGE_RECENT_ID_CAP = 200;
@@ -1076,6 +1077,16 @@ export function purgeLedgerKey(source: string, address: string): string {
 export function corruptPurgeLedgerKey(source: string, address: string): string {
   if (!isValidSource(source)) throw new Error("Invalid webhook source");
   return `${CORRUPT_PURGED_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}`;
+}
+
+function deletedMeetingPrefix(source: string, address: string): string {
+  if (!isValidSource(source)) throw new Error("Invalid webhook source");
+  return `${DELETED_MEETING_KEY_PREFIX}/${source}/${normalizeWebhookAddress(address)}/`;
+}
+
+export function deletedMeetingKey(source: string, address: string, meetingId: string): string {
+  if (!isValidMeetingId(meetingId)) throw new Error("Invalid meeting ID");
+  return `${deletedMeetingPrefix(source, address)}${createHash("sha256").update(meetingId).digest("hex")}`;
 }
 
 /**
@@ -1145,6 +1156,9 @@ export interface ConnectorControl {
     ledger: PurgeLedger,
   ): Promise<void>;
   clearLedger(source: string, address: string): Promise<void>;
+  markDeleted(source: string, address: string, meetingId: string): Promise<void>;
+  readDeleted(source: string, address: string, meetingId: string): Promise<boolean>;
+  clearDeleted(source: string, address: string): Promise<void>;
   quarantineLedger(
     source: string,
     address: string,
@@ -1412,6 +1426,61 @@ export class ConnectorControlStore implements ConnectorControl {
     await this.run(() => this.deleteKey(purgeLedgerKey(source, address)));
   }
 
+  async markDeleted(source: string, address: string, meetingId: string): Promise<void> {
+    await this.run(() => this.writeJson(deletedMeetingKey(source, address, meetingId), {
+      v: 1, deleted_at: new Date(this.now()).toISOString(),
+    }));
+  }
+
+  async readDeleted(source: string, address: string, meetingId: string): Promise<boolean> {
+    return this.run(async () => {
+      const value = await this.readJson(deletedMeetingKey(source, address, meetingId));
+      if (value === null) return false;
+      if (
+        !value || typeof value !== "object" || Array.isArray(value) ||
+        !("v" in value) || value.v !== 1 ||
+        !("deleted_at" in value) || typeof value.deleted_at !== "string" ||
+        !Number.isFinite(Date.parse(value.deleted_at))
+      ) throw new Error("Unreadable deleted-meeting marker");
+      return true;
+    });
+  }
+
+  async clearDeleted(source: string, address: string): Promise<void> {
+    const prefix = deletedMeetingPrefix(source, address);
+    await this.run(async () => {
+      const keys: string[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      for (;;) {
+        const result = await withSessionRefresh(this.node, async () =>
+          assertKvResult(await this.node.kv.list(cursor === undefined ? { prefix } : { prefix, cursor })));
+        const page = (result as { data?: unknown } | null)?.data;
+        if (!page || typeof page !== "object" || !("keys" in page) || !Array.isArray(page.keys)) {
+          throw new Error("Deleted-meeting listing unavailable");
+        }
+        for (const listed of page.keys) {
+          const key = typeof listed === "string" && /^[0-9a-f]{64}$/.test(listed)
+            ? `${prefix}${listed}` : listed;
+          if (typeof key !== "string" || !key.startsWith(prefix) ||
+              !/^[0-9a-f]{64}$/.test(key.slice(prefix.length))) {
+            throw new Error("Invalid deleted-meeting key");
+          }
+          keys.push(key);
+        }
+        const next = "nextCursor" in page ? page.nextCursor : undefined;
+        const truncated = "truncated" in page && page.truncated === true;
+        if (!truncated && next === undefined) break;
+        if (typeof next !== "string" || !next || cursors.has(next)) {
+          throw new Error("Truncated deleted-meeting listing");
+        }
+        cursors.add(next);
+        cursor = next;
+      }
+      for (const key of keys) await this.deleteKey(key);
+    });
+  }
+
   async repairUnreadableLedger(source: string, address: string): Promise<void> {
     const key = purgeLedgerKey(source, address);
     await this.run(async () => {
@@ -1602,6 +1671,11 @@ export interface ConnectorCompanionOptions {
   now?: () => number;
   /** Optional TC-3344 reset notification fired when `DELETE /purged` clears a source ledger. */
   onLedgerCleared?: (source: string, address: string) => void;
+  /**
+   * Removes the owner's stored Fireflies server-import grant. Called on disconnect and on a Fireflies purge, before
+   * anything else is written, so a failure answers 503 and the client's identical retry finishes the job.
+   */
+  removeFirefliesGrant?: (address: string) => Promise<void>;
   /**
    * `CONNECTOR_WEBHOOK_PUBLIC_ORIGIN` — the public HTTPS origin every minted callback URL must
    * carry. Omitted (local QA, tests) the host stays request-derived; see {@link deliveryUrl}.
@@ -1848,9 +1922,9 @@ function pendingView(item: PendingItem) {
   };
 }
 
-/** Deletion ledgers do not depend on webhook delivery being enabled. */
+/** Deletion controls do not depend on webhook delivery being enabled. */
 export function createConnectorPurgeRouter(
-  options: Pick<ConnectorCompanionOptions, "control" | "now" | "onLedgerCleared"> & {
+  options: Pick<ConnectorCompanionOptions, "control" | "now" | "onLedgerCleared" | "removeFirefliesGrant"> & {
     webhooks?: Pick<ConnectorCompanionOptions, "tokens" | "queue" | "registry">;
     authMiddleware?: RequestHandler;
   },
@@ -1863,12 +1937,45 @@ export function createConnectorPurgeRouter(
   const router = Router();
   if (!webhooks) {
     router.use((req, _res, next) => {
+      if (req.path === "/deleted") { next(); return; }
       const source = bodyOf(req).source;
       if (typeof source !== "string" || !LEDGER_ONLY_SOURCES.has(source)) { next("router"); return; }
       next();
     });
   }
   if (options.authMiddleware) router.use(options.authMiddleware);
+  router.post("/deleted", connectionMutation(async (req, res, user) => {
+    const { source, meetingId } = bodyOf(req);
+    if (source !== "fireflies") {
+      res.status(400).json({ error: "unknown_source" });
+      return;
+    }
+    if (!isValidMeetingId(meetingId)) {
+      res.status(400).json({ error: "invalid_meeting_id" });
+      return;
+    }
+    try {
+      await control.markDeleted(source, user.address, meetingId);
+      res.status(204).end();
+    } catch {
+      res.status(503).json({ error: "unavailable" });
+    }
+  }));
+
+  router.delete("/deleted", connectionMutation(async (req, res, user) => {
+    const { source } = bodyOf(req);
+    if (source !== "fireflies") {
+      res.status(400).json({ error: "unknown_source" });
+      return;
+    }
+    try {
+      await control.clearDeleted(source, user.address);
+      res.status(204).end();
+    } catch {
+      res.status(503).json({ error: "unavailable" });
+    }
+  }));
+
   /**
    * §4.8 — the purge notification that writes §6.2's tombstone ledger.
    *
@@ -1932,6 +2039,7 @@ export function createConnectorPurgeRouter(
     }
 
     try {
+      if (source === "fireflies") await options.removeFirefliesGrant?.(user.address);
       const config = ledgerOnly ? null : await tokens!.config(user.address);
       const marker = ledgerOnly ? null : await control.readDisabled(user.address);
       if (marker?.connectionRemoved === true) {
@@ -2384,6 +2492,7 @@ export function createConnectorWebhookCompanionRouter(
       ];
 
       await control.markDisabled(user.address, configured); // (1)
+      await options.removeFirefliesGrant?.(user.address);
       await tokens.revoke(user.address); // (2) config + token keys, and the token cache
 
       // (3) F010: the count comes from the clear itself. `list()`-then-`clear()` reported a
@@ -2739,6 +2848,7 @@ export function createConnectorWebhookCompanionRouter(
       control,
       now,
       onLedgerCleared: options.onLedgerCleared,
+      removeFirefliesGrant: options.removeFirefliesGrant,
       webhooks: { tokens, queue, registry },
     }),
   );

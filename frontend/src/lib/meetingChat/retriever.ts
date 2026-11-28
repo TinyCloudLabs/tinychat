@@ -73,7 +73,7 @@ export interface MeetingEvidenceReadOptions {
   /** Transcript-specific requests cannot be grounded by a summary alone. */
   requireTranscript?: boolean;
   /** Flag and purge-ledger gate for Fireflies KV reads. */
-  firefliesKv?: FirefliesKvGate;
+  firefliesKv: FirefliesKvGate;
 }
 
 /**
@@ -85,7 +85,7 @@ export interface BrowserMeetingTurnRetrieverOptions {
   tcw: Pick<TinyCloudWeb, "kv" | "sql">;
   meetings: Pick<ConnectorMeetingsClient, "list" | "read">;
   /** Flag and purge-ledger gate for Fireflies KV discovery and evidence reads. */
-  firefliesKv?: FirefliesKvGate;
+  firefliesKv: FirefliesKvGate;
 }
 
 interface ResultError {
@@ -316,7 +316,7 @@ export function createBrowserMeetingTurnRetriever(
         meetings: options.meetings,
         signal,
         requireTranscript: requiresTranscript(question),
-        ...(options.firefliesKv ? { firefliesKv: options.firefliesKv } : {}),
+        firefliesKv: options.firefliesKv,
       });
       if (evidenceOutcome.status === "aborted") return evidenceOutcome;
       if (evidenceOutcome.status === "storage-error") return evidenceOutcome;

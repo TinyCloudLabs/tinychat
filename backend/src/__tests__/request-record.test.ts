@@ -366,7 +366,7 @@ describe("TC-2537 request record", () => {
     const lines = Array.from({ length: 50 }, (_, i) => ({
       message: JSON.stringify({
         event: "tinychat_request", request_id: crypto.randomUUID(), method: "GET",
-        route: "/api/chat", status: i < 25 ? 200 : 503, duration_ms: 1,
+        route: "/api/billing/status", status: i < 25 ? 200 : 503, duration_ms: 1,
       }),
       level: 6,
     }));

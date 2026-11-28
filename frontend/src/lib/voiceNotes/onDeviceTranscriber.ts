@@ -55,10 +55,123 @@ export function subscribeOnDeviceTranscriptSync(listener: () => void): () => voi
 }
 
 function publish(key: string, next: OnDeviceTranscriptSyncState | null): void {
+  // Written, held, unrecorded or abandoned: nothing is left for an automatic retry of the write to do.
+  if (next?.state !== "failed" && next?.state !== "syncing") forgetSyncRetry(key);
+  // A new failure is a failed write unless the check says otherwise (`spaceRefusedWrite`).
+  else if (next?.state === "failed") { const retry = syncRetries.get(key); if (retry) retry.check = false; }
   if (JSON.stringify(syncStates.get(key) ?? null) === JSON.stringify(next)) return;
   if (next) syncStates.set(key, next);
   else syncStates.delete(key);
+  notifySync();
+}
+
+function notifySync(): void {
   for (const listener of [...syncListeners]) listener();
+}
+
+// --- Automatic retries of a write the space did not take -----------------------------------------------------------
+
+/** First waits between automatic retries of one note's write; the last repeats until the space takes it. */
+const SYNC_RETRY_DELAYS_MS: readonly number[] = [30_000, 120_000, 300_000];
+/**
+ * `at`: when the next automatic attempt goes out (null: none scheduled). `running`: attempts started and not settled.
+ * `check`: what failed was the check of a transcript this device records as saved in the space, not a write.
+ */
+interface SyncRetry { tcw: TinyCloudWeb; id: string; ctx: AccountContext; attempt: number; at: number | null; timer: ReturnType<typeof setTimeout> | null; running: number; check: boolean }
+/** Notes whose last write the space did not take (it did not answer, timed out, or refused it), by sync key. */
+const syncRetries = new Map<string, SyncRetry>();
+/** Set while the signed-in app runs retries (`installTranscriptSyncRetries`); without it nothing is scheduled. */
+let retryDriver: { delays: readonly number[]; jitter: boolean } | null = null;
+
+/** Thrown when the committed transcript changed under a rerun: trying the same write again cannot help. */
+class TranscriptRerunConflict extends Error {}
+/** Answers from the space that the same write will get again: the note's row is gone, or the transcript has no revision. */
+const WRITE_CANNOT_SUCCEED = new Set(["VOICE_NOTE_NOT_FOUND", "VOICE_NOTE_REV_REQUIRED"]);
+
+function cancelSyncRetry(key: string): void {
+  const retry = syncRetries.get(key);
+  if (!retry || retry.timer === null) return;
+  clearTimeout(retry.timer);
+  retry.timer = null;
+  retry.at = null;
+  notifySync();
+}
+
+function forgetSyncRetry(key: string): void {
+  cancelSyncRetry(key);
+  syncRetries.delete(key);
+}
+
+function scheduleSyncRetry(key: string): void {
+  const retry = syncRetries.get(key);
+  const driver = retryDriver;
+  if (!retry || !driver || retry.timer !== null) return;
+  const spacing = driver.delays[Math.min(retry.attempt, driver.delays.length - 1)] ?? SYNC_RETRY_DELAYS_MS.at(-1)!;
+  const delay = driver.jitter ? Math.round(spacing * (0.8 + Math.random() * 0.4)) : spacing;
+  retry.attempt += 1;
+  retry.at = Date.now() + delay;
+  retry.timer = setTimeout(() => {
+    retry.timer = null;
+    retry.at = null;
+    if (retryDriver !== driver || syncRetries.get(key) !== retry) return;
+    // Same account, and its work is still allowed (no sign-out, no switch): otherwise the attempt is abandoned.
+    const ctx = reofferContext(retry.tcw, retry.ctx);
+    if (!ctx) { abandonSync(key, retry.id, retry.tcw); return; }
+    void runSync(retry.tcw, retry.id, true, false, ctx);
+  }, delay);
+  notifySync();
+}
+
+/**
+ * The space did not take this note's write, or (`check`) did not answer the check of a transcript this device records as
+ * saved there: it is tried again by itself, spaced out, while the app runs retries.
+ */
+function spaceRefusedWrite(tcw: TinyCloudWeb, key: string, id: string, ctx: AccountContext, check = false): void {
+  const retry = syncRetries.get(key) ?? { tcw, id, ctx, attempt: 0, at: null, timer: null, running: 0, check };
+  retry.tcw = tcw;
+  retry.ctx = ctx;
+  retry.check = check;
+  syncRetries.set(key, retry);
+  scheduleSyncRetry(key);
+  notifySync();
+}
+
+/**
+ * The signed-in app (PendingVoiceNotesSaver) runs automatic retries of transcript writes the space did not take: after
+ * 30 s, 2 min, then every 5 min (each ±20%), until the space takes the write. A write that failed before this was installed
+ * gets its retry now. The returned function stops them all (sign-out, unmount); the failures stay shown, with Try again.
+ */
+export function installTranscriptSyncRetries(options: { delaysMs?: readonly number[] } = {}): () => void {
+  const driver = { delays: options.delaysMs ?? SYNC_RETRY_DELAYS_MS, jitter: options.delaysMs === undefined };
+  retryDriver = driver;
+  for (const key of syncRetries.keys()) scheduleSyncRetry(key);
+  return () => {
+    if (retryDriver !== driver) return;
+    retryDriver = null;
+    for (const key of syncRetries.keys()) cancelSyncRetry(key);
+  };
+}
+
+/** Tests: whether the app's automatic retries are running (`installTranscriptSyncRetries`). */
+export function __transcriptSyncRetriesRunningForTests(): boolean {
+  return retryDriver !== null;
+}
+
+/**
+ * The sync state as the note pipeline shows it. A failed check of a transcript this device records as saved shows as synced.
+ * A write the space refused before is "syncing" while another attempt runs, and carries the time of its next automatic
+ * attempt while one is scheduled.
+ */
+export function transcriptSyncForPipeline(tcw: TinyCloudWeb, id: string): (OnDeviceTranscriptSyncState & { retryAt?: number }) | null {
+  const key = syncKey(tcw, id);
+  const state = syncStates.get(key) ?? null;
+  const retry = syncRetries.get(key);
+  if (state?.state !== "failed" || !retry) return state;
+  // This device records the transcript as saved and only the check of it failed: nothing of the user's waits, so the note
+  // shows it as this device records it. The check is tried again by itself; a check that finds it missing writes it, shown.
+  if (retry.check) return { state: "synced" };
+  if (retry.running > 0) return { state: "syncing" };
+  return retry.at !== null ? { ...state, retryAt: retry.at } : state;
 }
 
 /**
@@ -90,11 +203,17 @@ const heldRecoveryUnregister = new Map<StorageAccountScope, () => void>();
 
 function runSync(tcw: TinyCloudWeb, id: string, expected: boolean, failed: boolean, ctx: AccountContext): Promise<boolean> {
   const key = syncKey(tcw, id);
-  return enqueue(key, async () => {
+  // This attempt replaces a scheduled automatic one (Try now, a save, a finished transcription).
+  cancelSyncRetry(key);
+  const retry = syncRetries.get(key);
+  if (retry) { retry.running += 1; notifySync(); }
+  const run = enqueue(key, async () => {
     const abandoned = await syncSettled(tcw, key, id, expected, failed, ctx);
     if (abandoned) abandonSync(key, id, tcw);
     return abandoned;
   });
+  if (retry) void run.finally(() => { retry.running -= 1; notifySync(); }).catch(() => undefined);
+  return run;
 }
 
 /**
@@ -157,6 +276,8 @@ function enqueue<T>(key: string, attempt: () => Promise<T>): Promise<T> {
 
 /** Clear account-scoped held sync state after its test has settled all in-flight attempts. */
 export async function __resetOnDeviceTranscriberForTests(): Promise<void> {
+  retryDriver = null;
+  for (const key of [...syncRetries.keys()]) forgetSyncRetry(key);
   storageHeld.clear();
   for (const unregister of heldRecoveryUnregister.values()) unregister();
   heldRecoveryUnregister.clear();
@@ -165,6 +286,7 @@ export async function __resetOnDeviceTranscriberForTests(): Promise<void> {
   chains.clear();
   syncStates.clear();
   published.clear();
+  for (const key of [...syncRetries.keys()]) forgetSyncRetry(key);
 }
 
 subscribeStorageScopeRetired((scope) => {
@@ -314,6 +436,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
   } catch {
     if (!isCurrent(tcw, ctx)) return true;
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptCheckFailed });
+    spaceRefusedWrite(tcw, key, id, ctx, true);
     return false;
   }
   if (published.has(resultKey)) return recordAndPublish(tcw, key, id, transcript, ctx);
@@ -330,7 +453,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
         || current.hash === await transcriptHash(namedBeforeAnonymousSpeakers(transcript, prepared.sentences))))
         return await recordAndPublish(tcw, key, id, transcript, ctx);
       if (!current || current.rev !== transcript.rerunBase.rev || current.hash !== transcript.rerunBase.hash)
-        throw new Error("The committed transcript changed before this rerun could sync. Try again.");
+        throw new TranscriptRerunConflict("The committed transcript changed before this rerun could sync. Try again.");
       await preserveVoiceNoteTranscriptHistory(tcw, current, checkpoint(tcw, ctx));
     }
     const result = await saveVoiceNoteTranscript(tcw, id, prepared,
@@ -340,7 +463,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
       if (transcript.rerunBase) {
         const current = await readTranscriptCommit(tcw, id);
         if (current?.rev !== transcript.rev || current.hash !== await transcriptHash(prepared.sentences))
-          throw new Error("A different transcript revision won this rerun. Try again.");
+          throw new TranscriptRerunConflict("A different transcript revision won this rerun. Try again.");
       }
       published.add(resultKey);
       return await recordAndPublish(tcw, key, id, transcript, ctx);
@@ -348,6 +471,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (isStorageFullError(result.error)) { reportStorageError(result.error, storageScopeFor(tcw)); holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", result.error);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
+    if (!WRITE_CANNOT_SUCCEED.has(result.error.code)) spaceRefusedWrite(tcw, key, id, ctx);
     await persistOnDeviceFailure(tcw, id, result.error.code === "VOICE_NOTE_OPERATION_TIMEOUT" ? "transcript_save_timed_out" : "transcript_save_failed", ctx);
     return false;
   } catch (err) {
@@ -355,6 +479,7 @@ async function syncOnce(tcw: TinyCloudWeb, key: string, id: string, expected: bo
     if (isStorageFullError(err)) { reportStorageError(err, storageScopeFor(tcw)); holdForStorage(tcw, key, id, ctx); return false; }
     console.warn("[OnDeviceStt] Could not save the on-device transcript to the space", err);
     publish(key, { state: "failed", message: LOCAL_COPY.transcriptSyncFailed });
+    if (!(err instanceof TranscriptRerunConflict)) spaceRefusedWrite(tcw, key, id, ctx);
     await persistOnDeviceFailure(tcw, id, "transcript_save_failed", ctx);
     return false;
   }

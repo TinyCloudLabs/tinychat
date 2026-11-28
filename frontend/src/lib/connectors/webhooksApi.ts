@@ -301,6 +301,10 @@ export interface ConnectorWebhooksClient {
   ): Promise<ConnectorWebhooksResult<ConnectorPurgeOverflow | null>>;
   /** The explicit user-initiated re-sync. Never fired automatically. */
   clearPurgeLedger(source: string): Promise<ConnectorWebhooksResult<null>>;
+  /** Suppress a single Fireflies meeting in the server-side import path. */
+  recordDeleted(source: string, id: string): Promise<ConnectorWebhooksResult<null>>;
+  /** Let server-side Fireflies imports see meetings the user allows back. */
+  clearDeleted(source: string): Promise<ConnectorWebhooksResult<null>>;
 }
 
 /**
@@ -521,6 +525,12 @@ export function createConnectorWebhooksClient(
     clearPurgeLedger(source) {
       // A DELETE **with** a body — the route requires `{source}`.
       return request<null>("/purged", { method: "DELETE", body: { source } });
+    },
+    recordDeleted(source, id) {
+      return request<null>("/deleted", { method: "POST", body: { source, meetingId: id } });
+    },
+    clearDeleted(source) {
+      return request<null>("/deleted", { method: "DELETE", body: { source } });
     },
   };
 }

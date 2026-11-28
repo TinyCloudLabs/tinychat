@@ -10,7 +10,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'sha256-EyjtwYacqqfVLyzPVyH1wIN86Cu5JWq24fP1VH01WDw=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self'; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network"
+      content="default-src 'self'; script-src 'self' 'sha256-8Pw3ZH0PRqLYVtdkUFm60MGd7OX4hy03ZOCyW7zMsCI=' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: https:; worker-src 'self'; manifest-src 'self'; frame-src https:; form-action 'self'; connect-src 'self' https://api.tinycloud.chat https://tee.node.tinycloud.xyz https://node.tinycloud.xyz https://registry.tinycloud.xyz https://api.tinycloud.xyz https://feedback.tinycloud.xyz https://openkey.so https://api.openkey.so https://api.redpill.ai https://rpc.ata.network https://search.sigstore.dev https://api-github-proxy.tinfoil.sh https://gh-attestation-proxy.tinfoil.sh https://cloud-api.phala.network https://api.trustauthority.intel.com https://api.fireflies.ai https://www.googleapis.com https://docs.googleapis.com https://meet.googleapis.com https://api.assemblyai.com https://f6663e38e8fc0a7d706ec2facb861246ae0077d8-8080.dstack-pha1-prod5.phala.network"
     />
     <meta
       name="viewport"
@@ -34,6 +34,29 @@
     <meta name="description" content="TinyCloud One: your feed, chat, recordings and apps, in your TinyCloud space." />
     <title>TinyCloud One</title>
     <script>
+      // Strip handoff credentials before any app module or diagnostics can read location.
+      (function () {
+        var location = window.location;
+        if (!location || !location.hash) return;
+        var handoff = /^\/handoff\/?$/i.test(location.pathname);
+        var fragment = location.hash;
+        if (!handoff && !/^#tch1/i.test(fragment)) return;
+        var clean = location.pathname + location.search;
+        try {
+          window.history.replaceState(window.history.state, "", clean);
+        } catch (e) {
+          location.replace("/");
+          return;
+        }
+        if (handoff && fragment.startsWith("#tch1") &&
+            "https://tinycloud.one/handoff".length + fragment.length <= 1800) {
+          window.takeHandoffFragment = function () {
+            delete window.takeHandoffFragment;
+            return fragment;
+          };
+        }
+      })();
+
       // Before the first paint: the theme and the size class. The same rules as
       // src/lib/theme.ts and src/lib/sizeClass.ts (src/lib/theme.test.ts runs
       // this script against them). Only the theme-choice key is read; the

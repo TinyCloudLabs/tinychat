@@ -76,6 +76,10 @@ export interface FakeVoiceNotes {
   };
 }
 
+// Recording-note storage outlives a fake recorder. Keep its IDs distinct across
+// instances so one fixture's durable discard marker cannot delete another's note.
+let recordingCounter = 0;
+
 export function createFakeVoiceNotes(now: () => number = () => Date.now()): FakeVoiceNotes {
   const listeners = new Map<EventName, Set<Listener>>();
   const retained = new Map<EventName, unknown[]>();
@@ -94,7 +98,6 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
   let remoteBeginFailure = false;
   let remoteResultFailure = false;
   let session: Session | null = null;
-  let counter = 0;
   let outboxCounter = 0;
   let generation = 0;
   let pauseShouldFail = false;
@@ -293,7 +296,7 @@ export function createFakeVoiceNotes(now: () => number = () => Date.now()): Fake
     async consumeShortcutRecord() {},
     async start(options) {
       if (session) throw failure("already_recording");
-      const id = `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}`;
+      const id = `00000000-0000-4000-8000-${String(++recordingCounter).padStart(12, "0")}`;
       if (tombstones.has(id)) throw failure("tombstoned");
       const signedIn = accountStatus === "signed_in" && !!defaults.accountDid;
       const opts: CaptureOptions = { transcriber: signedIn ? (options?.transcriber ?? defaults.transcriber) : "on-device",

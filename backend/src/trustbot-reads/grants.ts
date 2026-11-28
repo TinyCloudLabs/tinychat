@@ -6,10 +6,13 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import type { DelegatedAccess, TinyCloudNode } from "@tinycloud/node-sdk";
 import { verifyTranscriptWriterGrant, type VerifiedTranscriptWriter } from "../delegation-verify.js";
 import { activateVerifiedDelegation, DelegationActivationError } from "../portable-delegation.js";
+import type { StandingReadPolicyRefusal, StandingReadRuntime } from "./standing.js";
 import { areaResources, isReadArea, READ_AREA_NAMES, READ_AREAS, type ReadArea, type ReadResource } from "./areas.js";
 
 /** Where each owner's grant is kept, in the backend's own space. */
 export const TRUSTBOT_READ_GRANT_KEY_PREFIX = "trustbot/read-grants/";
+/** Where each owner's Telegram read grant is kept, apart from the other areas' grants, in the backend's own space. */
+export const TRUSTBOT_TELEGRAM_READ_GRANT_KEY_PREFIX = "trustbot/telegram-read-grants/";
 /** The longest a read grant may last. */
 export const READ_GRANT_MAX_MS = 7 * 86_400_000;
 /** Clock slack between the owner's browser and the backend. */
@@ -21,28 +24,40 @@ export type ReadAccess = DelegatedAccess;
 export type AreaState = "off" | "on" | "ended";
 /**
  * `grantCid` names the stored grant so the owner's browser can revoke it at the node: the node accepts a revocation
- * only from the owner who delegated, never from TrustBot's read identity that received it.
+ * only from the owner who delegated, never from TrustBot's read identity that received it. `areas` holds only the
+ * areas this instance manages (see `TrustBotReadGrantsOptions.areas`).
  */
-export interface ReadStatus { expiresAt: number | null; grantCid: string | null; areas: Record<ReadArea, AreaState> }
+export interface ReadStatus { expiresAt: number | null; grantCid: string | null; areas: Partial<Record<ReadArea, AreaState>> }
 export interface GrantEnvelope { serialized: string; siwe: string; signature: string }
 
 /** `none`: nothing stored. `off`: the owner has not turned this area on. `ended`: the grant expired. */
 export type ReadRefusal = "none" | "off" | "ended" | "rejected" | "unavailable";
 export class ReadGrantRefused extends Error {
-  constructor(readonly code: ReadRefusal) { super(`trustbot_read_${code}`); this.name = "ReadGrantRefused"; }
+  constructor(readonly code: ReadRefusal, readonly auditOutcome?: StandingReadPolicyRefusal) { super(`trustbot_read_${code}`); this.name = "ReadGrantRefused"; }
 }
 /** The grant the owner sent does not match what turning the area on needs. */
 export class ReadGrantInvalid extends Error {
   constructor(readonly code: string) { super(`trustbot_read_grant_${code}`); this.name = "ReadGrantInvalid"; }
 }
 
-interface StoredReads extends GrantEnvelope { v: 1; areas: ReadArea[]; cid: string; expiresAt: number }
+interface StoredReads extends GrantEnvelope {
+  v: 1;
+  areas: ReadArea[];
+  /** Kept even when all read areas are off. Missing in records created before per-chat settings. */
+  deniedChatIds?: string[];
+  cid: string;
+  expiresAt: number;
+  mintedAt?: number;
+  replacedGrantCid?: string;
+}
+interface ReadGrantRecord { record: StoredReads; etag: string }
+type WriteCondition = { ifMatch: string } | { ifNoneMatch: "*" };
 
-/** The backend's own key-value store, holding the sealed record. */
+/** The backend store supplies an ETag for conditional writes. In-memory stores may supply just the sealed value. */
 export interface ReadGrantStore {
-  get(key: string): Promise<string | undefined>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
+  get(key: string): Promise<string | { value: string; etag: string } | undefined>;
+  put(key: string, value: string, condition: WriteCondition): Promise<boolean | void>;
+  delete(key: string, condition: { ifMatch: string }): Promise<boolean | void>;
 }
 
 export interface TrustBotReadGrantsOptions {
@@ -53,11 +68,16 @@ export interface TrustBotReadGrantsOptions {
   host: string;
   /** Secret the storage key is derived from. */
   sealSecret: Uint8Array;
+  /** Storage namespace for the configured reader. */
+  keyPrefix?: string;
   now?: () => number;
+  standing?: StandingReadRuntime;
   /** Checks a grant; the default is the signed verifier in delegation-verify.ts. */
   verify?: typeof verifyTranscriptWriterGrant;
   /** Activates a checked grant at the node; the default is activateVerifiedDelegation. */
   activate?: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
+  /** Areas this instance holds. Telegram has its own instance and record, so the default leaves it out. */
+  areas?: readonly ReadArea[];
 }
 
 function checkAddress(address: string): string {
@@ -68,7 +88,9 @@ function checkAddress(address: string): string {
 function isStored(value: unknown): value is StoredReads {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return v.v === 1 && Array.isArray(v.areas) && v.areas.length > 0 && v.areas.every(isReadArea)
+  return v.v === 1 && Array.isArray(v.areas) && v.areas.every(isReadArea)
+    && (v.deniedChatIds === undefined || (Array.isArray(v.deniedChatIds)
+      && v.deniedChatIds.every(id => typeof id === "string" && id.length > 0 && id.length <= 128)))
     && typeof v.cid === "string" && typeof v.expiresAt === "number" && Number.isFinite(v.expiresAt)
     && typeof v.serialized === "string" && typeof v.siwe === "string" && typeof v.signature === "string";
 }
@@ -87,17 +109,24 @@ export class TrustBotReadGrants {
   readonly #store: ReadGrantStore;
   readonly #host: string;
   readonly #key: Buffer;
+  readonly #keyPrefix: string;
   readonly #now: () => number;
+  readonly #standing?: StandingReadRuntime;
   readonly #verify: typeof verifyTranscriptWriterGrant;
   readonly #activate: (verified: VerifiedTranscriptWriter) => Promise<ReadAccess>;
   readonly #activations = new Map<string, { access: ReadAccess; until: number }>();
+  readonly #areas: readonly ReadArea[];
 
   constructor(options: TrustBotReadGrantsOptions) {
     this.#reader = options.reader;
     this.#store = options.store;
     this.#host = options.host;
+    // Derive our own buffer here so the caller can clear sealSecret as soon as construction returns.
     this.#key = Buffer.from(hkdfSync("sha256", options.sealSecret, Buffer.alloc(0), "tinychat.trustbot-reads.grants/v1", 32));
+    this.#keyPrefix = options.keyPrefix ?? TRUSTBOT_READ_GRANT_KEY_PREFIX;
     this.#now = options.now ?? Date.now;
+    this.#standing = options.standing;
+    this.#areas = options.areas ?? READ_AREA_NAMES.filter(area => area !== "telegram");
     this.#verify = options.verify ?? verifyTranscriptWriterGrant;
     this.#activate = options.activate ?? (verified => activateVerifiedDelegation(this.#reader as TinyCloudNode, verified, { host: this.#host }));
   }
@@ -109,11 +138,63 @@ export class TrustBotReadGrants {
 
   /** Each area's state for this owner, and when the grant ends. */
   async status(address: string): Promise<ReadStatus> {
-    const stored = await this.#load(checkAddress(address));
+    return this.#status((await this.#load(checkAddress(address)))?.record);
+  }
+
+  /** One sealed-record read keeps the area switches and chat exclusions in the same snapshot. */
+  async readStatus(address: string): Promise<ReadStatus & { deniedChatIds: Set<string> }> {
+    const stored = (await this.#load(checkAddress(address)))?.record;
+    return { ...this.#status(stored), deniedChatIds: new Set(stored?.deniedChatIds ?? []) };
+  }
+
+  /** Authoritative per-chat settings, loaded afresh for each read; corrupt records fail closed. */
+  async deniedChatIds(address: string): Promise<Set<string>> {
+    return new Set((await this.#load(checkAddress(address)))?.record.deniedChatIds ?? []);
+  }
+
+  async setChatDenied(address: string, chat: string, denied: boolean): Promise<Set<string>> {
+    const owner = checkAddress(address);
+    if (typeof chat !== "string" || chat.length === 0 || chat.length > 128 || typeof denied !== "boolean") throw new ReadGrantInvalid("invalid_chat");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      const ids = new Set(stored?.record.deniedChatIds ?? []);
+      if (denied) ids.add(chat); else ids.delete(chat);
+      if (!stored && ids.size === 0) return ids;
+      // With no grant yet, retain only off settings and an empty envelope; access refuses the empty areas.
+      const next: StoredReads = { ...(stored?.record ?? {
+        v: 1, areas: [], cid: "", expiresAt: 0, serialized: "", siwe: "", signature: "",
+      }), deniedChatIds: [...ids] };
+      if (await this.#save(owner, next, stored?.etag) !== false) return ids;
+    }
+    throw new ReadGrantInvalid("changed");
+  }
+
+  async renewalStatus(address: string): Promise<ReadStatus & { renewAfter: number | null; replacedGrantCid: string | null }> {
+    const stored = (await this.#load(checkAddress(address)))?.record;
+    // Existing records predate mintedAt. The seven-day cap gives an early bound for those grants.
+    const lifetime = stored?.mintedAt === undefined ? READ_GRANT_MAX_MS : stored.expiresAt - stored.mintedAt;
+    const renewAfter = stored ? stored.expiresAt - lifetime / 2 : null;
+    return { ...this.#status(stored), renewAfter, replacedGrantCid: stored?.replacedGrantCid ?? null };
+  }
+
+  /** Clear only the pending revoke the owner acknowledged, without overwriting a concurrent replacement. */
+  async acknowledgeRevokedGrant(address: string, cid: string): Promise<void> {
+    const owner = checkAddress(address);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      if (!stored || stored.record.replacedGrantCid !== cid) return;
+      delete stored.record.replacedGrantCid;
+      if (await this.#save(owner, stored.record, stored.etag) !== false) return;
+    }
+    throw new ReadGrantInvalid("changed");
+  }
+
+  #status(stored: StoredReads | undefined): ReadStatus {
+    if (stored?.areas.length === 0) stored = undefined;
     const ended = stored !== undefined && stored.expiresAt <= this.#now();
-    const areas = Object.fromEntries(READ_AREA_NAMES.map(area => [
+    const areas = Object.fromEntries(this.#areas.map(area => [
       area, !stored?.areas.includes(area) ? "off" : ended ? "ended" : "on",
-    ])) as Record<ReadArea, AreaState>;
+    ])) as Partial<Record<ReadArea, AreaState>>;
     return { expiresAt: stored ? stored.expiresAt : null, grantCid: stored ? stored.cid : null, areas };
   }
 
@@ -126,32 +207,66 @@ export class TrustBotReadGrants {
     const owner = checkAddress(address);
     const now = this.#now();
     const previous = await this.#load(owner);
-    const kept = previous && previous.expiresAt > now ? previous.areas : [];
-    const areas = READ_AREA_NAMES.filter(name => name === area || kept.includes(name));
+    const kept = previous && previous.record.expiresAt > now ? previous.record.areas : [];
+    if (!this.#areas.includes(area)) throw new ReadGrantInvalid("area");
+    const areas = this.#areas.filter(name => name === area || kept.includes(name));
+    return this.#replace(owner, envelope, { areas, activateAreas: [area], now, previous });
+  }
+
+  /** Replaces the current grant for exactly the areas the owner has left enabled. */
+  async renew(address: string, cid: string, envelope: GrantEnvelope): Promise<ReadStatus> {
+    const owner = checkAddress(address);
+    const previous = await this.#load(owner);
+    if (!previous || previous.record.cid !== cid) throw new ReadGrantInvalid("changed");
+    const areas = previous.record.areas;
+    return this.#replace(owner, envelope, { areas, activateAreas: areas, now: this.#now(), previous, renewing: true });
+  }
+
+  async #replace(owner: string, envelope: GrantEnvelope, options: {
+    areas: ReadArea[]; activateAreas: ReadArea[]; now: number; previous?: ReadGrantRecord; renewing?: boolean;
+  }): Promise<ReadStatus> {
+    const { areas, activateAreas, now, previous, renewing } = options;
     const verified = await this.#check(owner, envelope, areas, now);
     if (!verified.ok) throw new ReadGrantInvalid(verified.code);
-    if (verified.verified.expiresAt.getTime() > now + READ_GRANT_MAX_MS + CLOCK_SLACK_MS) throw new ReadGrantInvalid("expiry_too_long");
+    const expiresAt = verified.verified.expiresAt.getTime();
+    const maxExpiry = now + READ_GRANT_MAX_MS + (renewing ? 0 : CLOCK_SLACK_MS);
+    if (expiresAt > maxExpiry) throw new ReadGrantInvalid("expiry_too_long");
+    if (renewing && previous && expiresAt <= previous.record.expiresAt) throw new ReadGrantInvalid("expiry_not_extended");
     try {
-      for (const path of activationPaths(area)) await this.#activate(this.#only(verified.verified, area, path));
+      for (const area of activateAreas) {
+        for (const path of activationPaths(area)) await this.#activate(this.#only(verified.verified, area, path));
+      }
     } catch (error) {
       throw new ReadGrantInvalid(error instanceof DelegationActivationError && error.status < 500 ? "rejected" : "unavailable");
     }
-    await this.#save(owner, { v: 1, areas, cid: verified.verified.cid, expiresAt: verified.verified.expiresAt.getTime(), ...envelope });
+    const cid = verified.verified.cid;
+    const record: StoredReads = { v: 1, areas, cid, expiresAt, mintedAt: now, ...envelope, deniedChatIds: previous?.record.deniedChatIds ?? [] };
+    // A retained off-only record has no active grant left for the owner to revoke.
+    if (previous?.record.cid && previous.record.areas.length > 0) {
+      record.replacedGrantCid = previous.record.cid === cid ? previous.record.replacedGrantCid : previous.record.cid;
+    }
+    if (await this.#save(owner, record, previous?.etag) === false) throw new ReadGrantInvalid("changed");
     this.#activations.clear();
-    return this.status(owner);
+    return this.#status(record);
   }
 
-  /** Turns `area` off. With no area left on, the stored grant is deleted; the owner's browser revokes it at the node. */
+  /** Turns `area` off. With no area left on, delete the grant unless per-chat settings must be retained. */
   async disable(address: string, area: ReadArea): Promise<ReadStatus> {
     const owner = checkAddress(address);
-    const stored = await this.#load(owner);
-    if (stored) {
-      const areas = stored.areas.filter(name => name !== area);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const stored = await this.#load(owner);
+      if (!stored || !stored.record.areas.includes(area)) return this.#status(stored?.record);
+      const areas = stored.record.areas.filter(name => name !== area);
+      const next = { ...stored.record, areas };
+      const retained = areas.length > 0 || (next.deniedChatIds?.length ?? 0) > 0;
+      const written = retained
+        ? await this.#save(owner, next, stored.etag)
+        : await this.#store.delete(this.#keyFor(owner), { ifMatch: stored.etag });
+      if (written === false) continue;
       this.#activations.clear();
-      if (areas.length > 0) await this.#save(owner, { ...stored, areas });
-      else await this.#store.delete(this.#keyFor(owner));
+      return this.#status(areas.length > 0 ? next : undefined);
     }
-    return this.status(owner);
+    throw new ReadGrantInvalid("changed");
   }
 
   /**
@@ -164,12 +279,17 @@ export class TrustBotReadGrants {
       throw new Error("trustbot_read_path_invalid");
     }
     const owner = checkAddress(address);
+    let auditOutcome: StandingReadPolicyRefusal | undefined;
+    const standing = await this.#standing?.access(owner, area, path, outcome => { auditOutcome = outcome; });
+    if (standing?.state === "active") return standing.access;
     let stored: StoredReads | undefined;
-    try { stored = await this.#load(owner); } catch { throw new ReadGrantRefused("unavailable"); }
-    if (!stored) throw new ReadGrantRefused("none");
+    try { stored = (await this.#load(owner))?.record; } catch { throw new ReadGrantRefused("unavailable"); }
+    if (!stored) throw new ReadGrantRefused(
+      standing?.state === "unavailable" || standing?.state === "ended" ? standing.state : "none", auditOutcome,
+    );
     if (!stored.areas.includes(area)) throw new ReadGrantRefused("off");
     const now = this.#now();
-    if (stored.expiresAt <= now) throw new ReadGrantRefused("ended");
+    if (stored.expiresAt <= now) throw new ReadGrantRefused("ended", auditOutcome === "no_grant" ? undefined : auditOutcome);
     const verified = await this.#check(owner, stored, stored.areas, now);
     if (!verified.ok) throw new ReadGrantRefused(verified.code === "expired" || verified.code === "session_expired" ? "ended" : "rejected");
     const cacheKey = `${owner}\n${verified.verified.cid}\n${area}\n${path ?? ""}`;
@@ -208,28 +328,29 @@ export class TrustBotReadGrants {
   }
 
   #keyFor(owner: string): string {
-    return `${TRUSTBOT_READ_GRANT_KEY_PREFIX}${owner}`;
+    return `${this.#keyPrefix}${owner}`;
   }
 
-  async #load(owner: string): Promise<StoredReads | undefined> {
+  async #load(owner: string): Promise<ReadGrantRecord | undefined> {
     const key = this.#keyFor(owner);
-    const sealed = await this.#store.get(key);
-    if (sealed === undefined) return undefined;
+    const stored = await this.#store.get(key);
+    if (stored === undefined) return undefined;
+    const { value: sealed, etag } = typeof stored === "string" ? { value: stored, etag: "" } : stored;
     const bytes = Buffer.from(sealed, "base64");
     const decipher = createDecipheriv("aes-256-gcm", this.#key, bytes.subarray(0, 12));
     decipher.setAAD(Buffer.from(key));
     decipher.setAuthTag(bytes.subarray(-16));
     const value: unknown = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(12, -16)), decipher.final()]).toString());
     if (!isStored(value)) throw new Error("trustbot_read_record_invalid");
-    return value;
+    return { record: value, etag };
   }
 
-  async #save(owner: string, record: StoredReads): Promise<void> {
+  async #save(owner: string, record: StoredReads, etag?: string): Promise<boolean | void> {
     const key = this.#keyFor(owner);
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.#key, nonce);
     cipher.setAAD(Buffer.from(key));
     const sealed = Buffer.concat([nonce, cipher.update(JSON.stringify(record)), cipher.final(), cipher.getAuthTag()]);
-    await this.#store.put(key, sealed.toString("base64"));
+    return this.#store.put(key, sealed.toString("base64"), etag === undefined ? { ifNoneMatch: "*" } : { ifMatch: etag });
   }
 }

@@ -15,7 +15,8 @@ import type { ReadsPush } from "./reads";
 import type { GatewayConfig } from "./config";
 import type { GuardDeps } from "./fetch-guard";
 import { isRecord } from "./guards";
-import { bearerMatches } from "./owner";
+import { courierBotId } from "./courier/bot-id";
+import { bearerMatches, OWNER_DID } from "./owner";
 import { SECRET_TOOLS } from "./secret-call";
 import type { SecretGrants } from "./secret-grants";
 import {
@@ -297,7 +298,7 @@ export interface GatewayDeps {
   now?: () => number;
   store?: BudgetStore;
   ownerStore?: OwnerStore;
-  /** TrustBot's meeting reads (meeting-reads.ts). Left out, the tools are never offered and every read is refused. */
+  /** TrustBot's reads (meeting-reads.ts). Left out, every read is refused and the read tools follow the setting. */
   meetings?: MeetingDesk;
   /** The approvals `propose_action` issued; in memory only without it. */
   actionStore?: ActionLedgerStore;
@@ -349,6 +350,17 @@ export function fileOwnerStore(path: string): OwnerStore {
   };
 }
 
+interface TurnMeter {
+  started: number;
+  tokens: number;
+  calls: number;
+  pending: number;
+  ended: boolean;
+  done: () => void;
+  finished: Promise<void>;
+  warned: boolean;
+}
+
 export class Gateway {
   readonly #cfg: GatewayConfig;
   readonly #fetch: UpstreamFetch;
@@ -359,6 +371,8 @@ export class Gateway {
   readonly #inflight = new Set<string>();
   readonly #used = new Map<string, number>();
   #usedTotal = 0;
+  /** A turn records settled model calls, independently of the daily reservation counter. */
+  readonly #turns = new Map<string, TurnMeter>();
   /** What each owner allowed for Main's web access; pushed by the supervisor, and "off" until it is. */
   readonly #policy = new Map<string, WebPolicy>();
   /** Page addresses each bot may read: typed by its owner (pushed by the supervisor) or returned by our own tools. */
@@ -366,6 +380,9 @@ export class Gateway {
   readonly #webUsed = new Map<string, WebUse>();
   readonly #asks = new AskDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId);
   readonly #meetings: MeetingDesk;
+  /** Whether deps.meetings was given. Without it (tests, local runs) no read can succeed even once the owner turns it
+   *  on, so Main's read tools follow the setting as for any other bot, instead of being listed while off. */
+  readonly #readsGiven: boolean;
   readonly #actions: ActionDesk;
   #webTotal = { searches: 0, pages: 0 };
   readonly #mcpOpen = new Map<string, number>();
@@ -399,8 +416,9 @@ export class Gateway {
     }
     this.#ownerStore = deps.ownerStore;
     this.#meetings = deps.meetings ?? new MeetingDesk({ backendOrigin: "", backendCallSecret: undefined });
+    this.#readsGiven = deps.meetings !== undefined;
     for (const [botId, ownerId] of Object.entries(this.#ownerStore?.load() ?? {})) this.#owners.set(botId, ownerId);
-    this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore, botId => this.#meetings.held(botId));
+    this.#actions = new ActionDesk(() => this.#now(), botId => this.#owners.get(botId) ?? botId, botId => this.#asks.outside(botId), deps.actionStore);
     this.#secrets = deps.secretNet ? deps.secrets : undefined;
     this.#secretNet = deps.secretNet;
   }
@@ -521,10 +539,49 @@ export class Gateway {
     return this.#deny(botId, "route", 403, route);
   }
 
+  /**
+   * Courier turns run as the owner's separate Courier bot: its own request slot and token budget, so what a peer
+   * uses up never reaches the owner's Main chat (and Main's use never blocks a peer for longer than its own limits).
+   */
+  courierModel(owner: string, peer: string, body: Record<string, unknown>): Promise<Response> {
+    if (!OWNER_DID.test(owner)) return Promise.resolve(failure(400, "Request refused by the bots gateway."));
+    return this.#chat(courierBotId(owner), new Request(`http://gateway${CHAT_PATH}`, {
+      method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" },
+    }), () => {}, peer);
+  }
+
   /** Tokens counted today for one bot, and for all bots. */
   usage(botId: string): { bot: number; total: number } {
     this.#rollDay();
     return { bot: this.#used.get(botId) ?? 0, total: this.#usedTotal };
+  }
+  beginTurn(botId: string): void {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.#turns.set(botId, { started: this.#now(), tokens: 0, calls: 0, pending: 0, ended: false, done: resolve, finished: promise, warned: false });
+  }
+
+  async endTurn(botId: string): Promise<void> {
+    const turn = this.#turns.get(botId);
+    if (!turn) return;
+    turn.ended = true;
+    if (turn.pending === 0) turn.done();
+    await turn.finished;
+    if (this.#turns.get(botId) === turn) this.#turns.delete(botId);
+    console.log(JSON.stringify({ bots: "turn_tokens", bot: botId.slice(0, 12), tokens: turn.tokens, calls: turn.calls, ms: this.#now() - turn.started }));
+  }
+
+  #settleTurn(botId: string, turn: TurnMeter | undefined, tokens?: number): void {
+    if (!turn) return;
+    if (tokens !== undefined) {
+      turn.tokens += tokens;
+      turn.calls++;
+      const limit = this.#cfg.turnSoftLimit ?? 0;
+      if (limit > 0 && !turn.warned && turn.tokens > limit) {
+        turn.warned = true;
+        console.log(JSON.stringify({ bots: "turn_soft_limit", bot: botId.slice(0, 12), tokens: turn.tokens, limit }));
+      }
+    }
+    if (--turn.pending === 0 && turn.ended) turn.done();
   }
 
   /** Tokens counted today for every bot of this bot's owner. */
@@ -639,10 +696,11 @@ export class Gateway {
   /**
    * Main's tools over MCP (Streamable HTTP, JSON replies, no session): `initialize`, `tools/list` and `tools/call`.
    * Two servers share this: `web` (search, fetch), always listed with the owner's setting applied on each call, and
-   * `app` (ask_owner, request_secret, propose_action, the meeting tools, and with approved secrets call_with_secret and
-   * list_secrets), listed only while the owner's setting for it is on (the secret tools also while a secret is approved,
-   * which runs to its date) and checked again on each call. A setting change takes effect at the bot's next call,
-   * without restarting its sandbox. Both serve only the tools on their allow-list (tool-policy.ts): tools/list drops any
+   * `app` (ask_owner, request_secret, propose_action, and with approved secrets call_with_secret and list_secrets),
+   * listed only while the owner's setting for it is on (the secret tools also while a secret is approved, which runs to
+   * its date) and checked again on each call. Main's meeting and feed/chat read tools are listed even while their area
+   * is off (meeting-reads.ts mainTools): the app offers the owner that access when the bot tries a read, and the call
+   * is refused until it is on. A setting change takes effect at the bot's next call, without restarting its sandbox. Both serve only the tools on their allow-list (tool-policy.ts): tools/list drops any
    * other, and tools/call refuses any other name before dispatch.
    */
   async #mcp(botId: string, req: Request, server: "web" | "app"): Promise<Response> {
@@ -680,9 +738,11 @@ export class Gateway {
         );
       }
       if (method === "ping") return Response.json(rpcResult(id, {}));
-      // The app tools are offered only while the owner's setting is on; the call is checked again on every call.
+      // The app tools follow the owner's setting, except Main's meeting and feed/chat reads, listed while off so the
+      // bot's attempt can prompt the app to offer access; every call is checked against the setting again.
       if (method === "tools/list") {
-        const tools = server === "app" ? [...this.#appTools(botId), ...this.#meetings.tools(botId)] : TOOLS;
+        const reads = this.#readsGiven && this.ownerOf(botId) === botId ? this.#meetings.mainTools(botId) : this.#meetings.tools(botId);
+        const tools = server === "app" ? [...this.#appTools(botId), ...reads] : TOOLS;
         return Response.json(rpcResult(id, { tools: servedTools<{ name: string }>(server, tools) }));
       }
       if (method === "tools/call") {
@@ -851,54 +911,67 @@ export class Gateway {
     }
   }
 
-  async #chat(botId: string, req: Request, streaming: () => void): Promise<Response> {
+  async #chat(botId: string, req: Request, streaming: () => void, courierPeer?: string): Promise<Response> {
+    const deny = (reason: string, status: number) => {
+      if (!courierPeer) return this.#deny(botId, reason, status);
+      console.log(JSON.stringify({ gateway: "courier", peer: courierPeer, outcome: reason }));
+      // The caller learns only the reason class, so it can answer the asking agent with a fixed sentence.
+      return Response.json({ error: { message: "Request refused by the bots gateway." } }, { status, headers: { "x-courier-refusal": reason } });
+    };
     // Everything that can refuse without reading the body comes first: size header, budget store, budget, the
     // bot's one slot.
-    if (Number(req.headers.get("content-length") ?? 0) > this.#cfg.maxBodyBytes) return this.#deny(botId, "body_size", 413);
-    if (this.#unsaved && !this.#persist()) return this.#deny(botId, "budget_store", 503);
-    if (this.#ownersUnsaved && !this.#persistOwners()) return this.#deny(botId, "budget_store", 503);
-    if (this.#remaining(botId) <= 0) return this.#deny(botId, "budget", 429);
-    if (this.#inflight.has(botId)) return this.#deny(botId, "concurrency", 429);
+    if (Number(req.headers.get("content-length") ?? 0) > this.#cfg.maxBodyBytes) return deny("body_size", 413);
+    if (this.#unsaved && !this.#persist()) return deny("budget_store", 503);
+    if (this.#ownersUnsaved && !this.#persistOwners()) return deny("budget_store", 503);
+    if (this.#remaining(botId) <= 0) return deny("budget", 429);
+    if (this.#inflight.has(botId)) return deny("concurrency", 429);
     this.#inflight.add(botId);
+    const turn = courierPeer ? undefined : this.#turns.get(botId);
+    if (turn) turn.pending++;
     let relaying = false;
+    let attempted = false;
     try {
       const raw = await readBody(req, this.#cfg.maxBodyBytes, this.#cfg.bodyTimeoutMs);
-      if (raw === "too_large") return this.#deny(botId, "body_size", 413);
-      if (raw === "timeout") return this.#deny(botId, "body_timeout", 408);
+      if (raw === "too_large") return deny("body_size", 413);
+      if (raw === "timeout") return deny("body_timeout", 408);
       let parsed: unknown;
       try {
         parsed = JSON.parse(new TextDecoder().decode(raw));
       } catch {
-        return this.#deny(botId, "body", 400);
+        return deny("body", 400);
       }
       const body = chatBody(parsed, this.#cfg);
-      if (!body) return this.#deny(botId, "body", 400);
+      if (!body) return deny("body", 400);
       // Never let a request overshoot, alone or alongside other bots: the prompt must fit what is left, the output
       // is capped to the rest, and the whole estimate is reserved against this bot's and the global budget before
       // the call (settled to the reported usage afterwards).
       const estimate = Math.ceil(raw.byteLength / BYTES_PER_TOKEN);
       const remaining = this.#remaining(botId);
-      if (estimate >= remaining) return this.#deny(botId, "budget", 429);
+      if (estimate >= remaining) return deny("budget", 429);
       body.max_tokens = Math.min(body.max_tokens as number, remaining - estimate);
       const reservation = estimate + (body.max_tokens as number);
       const day = this.#day;
       if (!this.#charge(botId, reservation, day)) {
         this.#charge(botId, -reservation, day);
-        return this.#deny(botId, "budget_store", 503);
+        return deny("budget_store", 503);
       }
 
       streaming();
       let upstream: UpstreamCall;
       try {
+        attempted = true;
         upstream = await this.#upstream(CHAT_PATH, { method: "POST", body: JSON.stringify(body) }, botId);
       } catch {
         this.#charge(botId, -reservation, day);
         return failure(502, "Model unavailable.");
       }
       relaying = true;
-      return this.#relay(botId, upstream, body.stream === true, reservation, day);
+      return this.#relay(botId, upstream, body.stream === true, reservation, day, courierPeer, turn);
     } finally {
-      if (!relaying) this.#inflight.delete(botId);
+      if (!relaying) {
+        this.#inflight.delete(botId);
+        this.#settleTurn(botId, turn, attempted ? 0 : undefined);
+      }
     }
   }
 
@@ -906,7 +979,7 @@ export class Gateway {
    * Streams the upstream response back, counting bytes and usage; when it ends, settles the reservation to the
    * reported usage (the whole reservation if none arrived, nothing for an upstream error) and frees the slot.
    */
-  #relay(botId: string, upstream: UpstreamCall, streamed: boolean, reservation: number, day: string): Response {
+  #relay(botId: string, upstream: UpstreamCall, streamed: boolean, reservation: number, day: string, courierPeer?: string, turn?: TurnMeter): Response {
     const { response, done, abort } = upstream;
     const usage = new UsageReader(streamed);
     let finished = false;
@@ -917,7 +990,10 @@ export class Gateway {
       this.#inflight.delete(botId);
       const tokens = usage.tokens ?? (response.ok ? reservation : 0);
       this.#charge(botId, tokens - reservation, day);
-      console.log(JSON.stringify({ gateway: "allow", bot: botId.slice(0, 12), route: `POST ${CHAT_PATH}`, status: response.status, tokens }));
+      this.#settleTurn(botId, turn, tokens);
+      console.log(JSON.stringify(courierPeer
+        ? { gateway: "courier", peer: courierPeer, outcome: response.ok ? "model_ok" : "model_unavailable" }
+        : { gateway: "allow", bot: botId.slice(0, 12), route: `POST ${CHAT_PATH}`, status: response.status, tokens }));
     };
     // A reader that stops pulling must not hold the bot's slot past the deadline.
     upstream.signal.addEventListener("abort", finish, { once: true });

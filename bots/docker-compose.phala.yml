@@ -41,6 +41,7 @@ services:
       BOTS_ACCEPT_LEGACY_OWNER_HEADER: ${BOTS_ACCEPT_LEGACY_OWNER_HEADER:-0}
       # Same list as the backend's BOTS_TEST_ACCOUNTS; the service enforces it too. Empty admits nobody.
       BOTS_TEST_ACCOUNTS: ${BOTS_TEST_ACCOUNTS:-}
+      BOTS_COURIER_ENABLED: ${BOTS_COURIER_ENABLED:-false}
       # Owner history stays off; enabling requires the receipt signer and node-origin pins.
       BOTS_HISTORY_ENABLED: ${BOTS_HISTORY_ENABLED:-false}
       BOTS_HISTORY_SIGNER_DID: ${BOTS_HISTORY_SIGNER_DID:-}
@@ -90,6 +91,7 @@ services:
       BOTS_MAX_TOKENS: ${BOTS_MAX_TOKENS:-8192}
       BOTS_BOT_DAILY_TOKENS: ${BOTS_BOT_DAILY_TOKENS:-2000000}
       BOTS_GLOBAL_DAILY_TOKENS: ${BOTS_GLOBAL_DAILY_TOKENS:-20000000}
+      BOTS_TURN_SOFT_LIMIT: ${BOTS_TURN_SOFT_LIMIT:-0}
       BOTS_BODY_TIMEOUT_MS: ${BOTS_BODY_TIMEOUT_MS:-30000}
       # Main's web access: the search provider's key. Empty: every web call is refused as unavailable.
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
@@ -98,8 +100,9 @@ services:
       # Budget counters survive restarts here; an unreadable file stops the gateway rather than resetting them.
       # Sealed secret-request records live here too (secret-grants/); their key is never on this volume.
       - bot-budget:/var/lib/bots-gateway
-      # Only for the key that seals secret-request records (dstack-key.ts: GetKey on one path). No other service
-      # but dstack-ingress mounts it; TC-3773 replaces this with a proxy that enforces the path.
+      # Only for the two keys the gateway takes (dstack-key.ts: GetKey on tinychat-bots/secret-seal, which seals
+      # secret-request records, and on tinychat-bots/approval-requester, the stable key that signs approval links).
+      # No other service but dstack-ingress mounts it; TC-3773 replaces this with a proxy that enforces both paths.
       - /var/run/dstack.sock:/var/run/dstack.sock
     restart: unless-stopped
 

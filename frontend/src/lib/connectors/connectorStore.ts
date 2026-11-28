@@ -41,6 +41,7 @@ import type {
   FirefliesTranscript,
 } from "./firefliesClient";
 import { deleteCombinedReferencing } from "./combinedMeetingStore";
+import { announceConnectorPurged } from "./connectorPurgeSignal";
 import type { ConnectorConnection, ConnectorId } from "./types";
 import { keepUserTitle } from "../recordingTitleMeta";
 
@@ -758,6 +759,115 @@ function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boo
   }
 }
 
+async function sha256Hex(text: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Deleted markers retain no provider id in either their key or value. */
+export type DeletableMeetingSource = "granola" | "fireflies" | "google-meet";
+
+export async function deletedMeetingKvKey(source: DeletableMeetingSource, sourceId: string): Promise<string> {
+  return `${CONNECTORS_KV_PREFIX}/${source}/deleted/${await sha256Hex(sourceId)}`;
+}
+
+export function granolaDeletedKvKey(sourceId: string): Promise<string> {
+  return deletedMeetingKvKey("granola", sourceId);
+}
+
+function validMeetingSourceId(sourceId: string): boolean {
+  return sourceId.length > 0 && sourceId !== "." && sourceId !== ".."
+    && !sourceId.includes("/") && !sourceId.includes("\\") && !sourceId.includes("\0");
+}
+
+export async function isMeetingDeleted(tcw: TinyCloudWeb, source: DeletableMeetingSource, sourceId: string): Promise<StoreResult<boolean>> {
+  if (source !== "granola" && source !== "fireflies" && source !== "google-meet") {
+    return fail({ code: "INVALID_SOURCE", message: "invalid meeting source" }, "isMeetingDeleted", storageScopeFor(tcw));
+  }
+  if (!validMeetingSourceId(sourceId)) {
+    return fail({ code: "INVALID_SOURCE_ID", message: "invalid meeting source id" }, "isMeetingDeleted", storageScopeFor(tcw));
+  }
+  try {
+    const result = await tcw.kv.get(await deletedMeetingKvKey(source, sourceId), { source: "network" });
+    if (result.ok) return { ok: true, data: (result.data as { data?: unknown } | undefined)?.data !== undefined };
+    if (result.error.code === "KV_NOT_FOUND") return { ok: true, data: false };
+    return fail(result.error, "isMeetingDeleted", storageScopeFor(tcw));
+  } catch {
+    return fail({ code: "KV_GET_TRANSPORT", message: "marker read rejected" }, "isMeetingDeleted", storageScopeFor(tcw));
+  }
+}
+
+export function isGranolaMeetingDeleted(tcw: TinyCloudWeb, sourceId: string): Promise<StoreResult<boolean>> {
+  return isMeetingDeleted(tcw, "granola", sourceId);
+}
+
+/** A late marker requires removing the SQL row and both potential KV bodies. */
+async function removeSourceMeetingRows(tcw: TinyCloudWeb, source: DeletableMeetingSource, sourceId: string): Promise<StoreResult<void>> {
+  for (const key of [meetingKvKey(source, sourceId), transcriptKvKey(source, sourceId)]) {
+    const removed = await tcw.kv.delete(key);
+    if (!removed.ok && removed.error.code !== "KV_NOT_FOUND") return fail(removed.error, "removeSourceMeetingRows(kv)", storageScopeFor(tcw));
+  }
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const removed = await store(tcw).execute("DELETE FROM connector_meeting WHERE source = ? AND source_id = ?", [source, sourceId]);
+  if (!removed.ok) return fail(removed.error, "removeSourceMeetingRows(sql)", storageScopeFor(tcw));
+  return { ok: true, data: undefined };
+}
+
+export async function deleteSourceMeeting(tcw: TinyCloudWeb, source: DeletableMeetingSource, sourceId: string): Promise<StoreResult<void>> {
+  const marker = await isMeetingDeleted(tcw, source, sourceId);
+  if (!marker.ok) return marker;
+  const schema = await ensureSchema(tcw);
+  if (!schema.ok) return schema;
+  const cascade = await deleteCombinedReferencing(tcw, source, sourceId);
+  if (!cascade.ok) return fail(cascade.error, "deleteSourceMeeting(combined)", storageScopeFor(tcw));
+  if (cascade.data.unverifiedIds.length) {
+    return fail({ code: "COMBINED_MEMBERS_UNKNOWN", message: "combined meeting membership cannot be determined" }, "deleteSourceMeeting(combined)", storageScopeFor(tcw));
+  }
+  if (!marker.data) {
+    let key: string;
+    try {
+      key = await deletedMeetingKvKey(source, sourceId);
+    } catch {
+      return fail({ code: "MARKER_KEY_FAILED", message: "marker key could not be derived" }, "deleteSourceMeeting(marker)", storageScopeFor(tcw));
+    }
+    const put = await tcw.kv.put(key, JSON.stringify({ v: 1, deleted_at: new Date().toISOString() }));
+    if (!put.ok) return fail(put.error, "deleteSourceMeeting(marker)", storageScopeFor(tcw));
+  }
+  const rows = await removeSourceMeetingRows(tcw, source, sourceId);
+  if (!rows.ok) return rows;
+  const late = await deleteCombinedReferencing(tcw, source, sourceId);
+  if (!late.ok) return fail(late.error, "deleteSourceMeeting(combined-late)", storageScopeFor(tcw));
+  if (late.data.unverifiedIds.length) {
+    return fail({ code: "COMBINED_MEMBERS_UNKNOWN", message: "combined meeting membership cannot be determined" }, "deleteSourceMeeting(combined-late)", storageScopeFor(tcw));
+  }
+  return { ok: true, data: undefined };
+}
+
+export async function deleteGranolaMeeting(tcw: TinyCloudWeb, source: string, sourceId: string): Promise<StoreResult<void>> {
+  if (source !== "granola") {
+    return { ok: false, error: { code: "INVALID_SOURCE", message: "only Granola meetings can be deleted here" } };
+  }
+  return deleteSourceMeeting(tcw, "granola", sourceId);
+}
+
+export async function clearDeletedMeetings(tcw: TinyCloudWeb, source: DeletableMeetingSource): Promise<StoreResult<void>> {
+  if (source !== "granola" && source !== "fireflies" && source !== "google-meet") {
+    return fail({ code: "INVALID_SOURCE", message: "invalid meeting source" }, "clearDeletedMeetings", storageScopeFor(tcw));
+  }
+  const keys = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/deleted/`);
+  if (!keys.ok) return keys;
+  for (const key of keys.data) {
+    const removed = await tcw.kv.delete(key);
+    if (!removed.ok && removed.error.code !== "KV_NOT_FOUND") return fail(removed.error, "clearDeletedMeetings", storageScopeFor(tcw));
+  }
+  return { ok: true, data: undefined };
+}
+
+export function clearGranolaDeletedMeetings(tcw: TinyCloudWeb): Promise<StoreResult<void>> {
+  return clearDeletedMeetings(tcw, "granola");
+}
+
 /**
  * Insert-or-update a meeting keyed on (source, source_id), then write/refresh
  * the transcript KV body.
@@ -785,7 +895,7 @@ function datetimeConfidence(metadata: Record<string, unknown>, hasStartedAt: boo
  * All storage calls are sequential — TinyCloud drops concurrent responses on
  * one space. Every resolved `{ ok: false }` surfaces; nothing is swallowed.
  */
-export async function upsertMeeting(
+async function writeMeeting(
   tcw: TinyCloudWeb,
   meeting: NormalizedMeeting,
   sentences: FirefliesSentence[],
@@ -905,6 +1015,36 @@ export async function upsertMeeting(
   }
 
   return { ok: true, data: { id: existingId, inserted: false, createdAt } };
+}
+
+/**
+ * Read a deleted marker before writing, then again after writing; if another
+ * device deleted it in between, remove the newly written SQL and KV data.
+ */
+export async function upsertMeeting(
+  tcw: TinyCloudWeb,
+  meeting: NormalizedMeeting,
+  sentences: FirefliesSentence[],
+  options: { preserveExistingTitle?: boolean; preserveTranscriptBody?: boolean } = {},
+): Promise<StoreResult<UpsertMeetingOutcome>> {
+  if (meeting.source !== "granola" && meeting.source !== "fireflies" && meeting.source !== "google-meet") {
+    return writeMeeting(tcw, meeting, sentences, options);
+  }
+  const source = meeting.source;
+  const deleted = { ok: false as const, error: {
+    code: source === "granola" ? "GRANOLA_MEETING_DELETED" : "SOURCE_MEETING_DELETED",
+    message: `${source} meeting is deleted`,
+  } };
+  const before = await isMeetingDeleted(tcw, source, meeting.sourceId);
+  if (!before.ok) return before;
+  if (before.data) return deleted;
+  const written = await writeMeeting(tcw, meeting, sentences, options);
+  if (!written.ok) return written;
+  const after = await isMeetingDeleted(tcw, source, meeting.sourceId);
+  if (!after.ok) return after;
+  if (!after.data) return written;
+  const removed = await deleteSourceMeeting(tcw, source, meeting.sourceId);
+  return removed.ok ? deleted : removed;
 }
 
 // ── Transcript bodies (KV) ──────────────────────────────────────────────
@@ -1372,6 +1512,51 @@ export async function purgeConnector(
     }, "purgeConnector(combined-late)", storageScopeFor(tcw));
   }
   return { ok: true, data: undefined };
+}
+
+/** Extra passes after the first purge when listing still finds records (a late server write or another device). */
+const PURGE_VERIFY_RETRIES = 3;
+
+/**
+ * {@link purgeConnector}, then list both prefixes again from the network. Records still there
+ * (written by the server while the purge ran, or by another device) are purged again; if any
+ * remain after the retries the purge fails with a retryable error rather than reporting a delete
+ * that did not hold.
+ */
+export async function purgeConnectorVerified(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<void>> {
+  try {
+    return await purgeConnectorUntilEmpty(tcw, source);
+  } finally {
+    // Some records may be gone even when the purge did not finish: lists must read again either way.
+    announceConnectorPurged(source);
+  }
+}
+
+async function purgeConnectorUntilEmpty(
+  tcw: TinyCloudWeb,
+  source: string,
+): Promise<StoreResult<void>> {
+  const first = await purgeConnector(tcw, source);
+  if (!first.ok) return first;
+  for (let pass = 0; ; pass += 1) {
+    const meetings = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/meeting/`);
+    if (!meetings.ok) return meetings;
+    const transcripts = await listKvPrefix(tcw, `${CONNECTORS_KV_PREFIX}/${source}/transcript/`);
+    if (!transcripts.ok) return transcripts;
+    if (meetings.data.length + transcripts.data.length === 0) return { ok: true, data: undefined };
+    if (pass >= PURGE_VERIFY_RETRIES) {
+      return fail(
+        { code: "KV_PURGE_INCOMPLETE", message: "some meetings were still in your space after the delete; try again" },
+        "purgeConnectorVerified(relist)",
+        storageScopeFor(tcw),
+      );
+    }
+    const again = await purgeConnector(tcw, source);
+    if (!again.ok) return again;
+  }
 }
 
 // ── Normalization (Fireflies raw → NormalizedMeeting) ──────────────────

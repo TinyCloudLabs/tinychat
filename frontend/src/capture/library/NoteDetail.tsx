@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import type { TinyCloudWeb } from "@tinycloud/web-sdk";
+import type { SessionStore } from "@tinyboilerplate/client";
 
 import type { VoiceNoteTranscriptionProps } from "@/capture/recorder/transcriptionProps";
 import { copyText } from "@/lib/copyText";
@@ -19,6 +20,7 @@ import { VoiceNoteSaveTimeout, withVoiceNoteSaveDeadline } from "@/lib/voiceNote
 import { localTranscriptToSave, VOICE_NOTE_SOURCE } from "@/lib/voiceNotes/voiceNoteStore";
 import { gateCombinedSummary, readAutomaticSummaries } from "@/lib/meetingSummary/automaticSummaries";
 import { NoteDetailView, type NoteDetailViewProps } from "./NoteDetailView";
+import { DeleteGranolaSheet } from "./DeleteGranolaSheet";
 import { CombineSheet } from "./combine/CombineSheet";
 import { canCombine } from "./combine/candidates";
 import { displayMembers, isCombined, memberLines, type CombineDetail } from "./combine/combinedView";
@@ -29,6 +31,7 @@ import { useCombinedSummary } from "./combine/useCombinedSummary";
 import type { SummaryRunner } from "@/lib/meetingSummary/summaryRunner";
 import { applySpeakerNames } from "./speakerNames";
 import { useSpeakerNames } from "./useSpeakerNames";
+import { callSpeakerLabels } from "./callParticipants";
 import { useWordFixApplier, useWordFixedSentences } from "@/lib/wordFixes/wordFixesStore";
 import { hasPrivateCloudTimingProvenance, hasSegmentTimes, transcriptWithTimestamps } from "./transcriptSegments";
 import type { Library } from "./useLibrary";
@@ -38,6 +41,11 @@ import { captureEvents } from "../captureEvents";
 import { ShareRecordingButton } from "../share/ShareRecordingSheet";
 import { useRecordingShared } from "@/lib/nativeShares/sentShares";
 import { libraryRowTitle } from "./LibraryRow";
+import { deleteGranolaMeeting, deleteSourceMeeting } from "@/lib/connectors/connectorStore";
+import { createConnectorWebhooksClient } from "@/lib/connectors/webhooksApi";
+import { countCombinedReferencing } from "@/lib/connectors/combinedMeetingStore";
+import { runGranolaSpaceWrite } from "@/lib/connectors/granolaSync";
+import { deleteFirefliesWithLedger } from "./deleteFirefliesWithLedger";
 
 /** Matches markdown-text's copy button: the tick reverts on its own. */
 const COPIED_DURATION = 1500;
@@ -57,6 +65,8 @@ export function NoteDetail(props: {
   library: Library;
   /** The signed-in account's space: where Combine reads the two captures and writes the combined meeting. */
   tcw: TinyCloudWeb;
+  backendUrl?: string;
+  sessionStore?: SessionStore;
   pushed: boolean;
   onBack: () => void;
   transcription: VoiceNoteTranscriptionProps | undefined;
@@ -66,11 +76,79 @@ export function NoteDetail(props: {
   activityControl?: ReactNode;
   /** Makes a combined meeting's summary (CaptureSurface owns it); without one no summary is shown. */
   summaries?: SummaryRunner;
+  /** A Granola meeting was deleted from this page: the page shows the "Meeting deleted" notice. */
+  onGranolaDeleted?: () => void;
 }) {
   const { library } = props;
   const { item, reads, audio } = library.note;
   const navigate = useNavigate();
   const combined = useCombinedMeeting({ tcw: props.tcw, item, onChanged: library.refresh, onDeleted: props.onBack });
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteSource = item?.source === "granola" ? "granola"
+    : item && !item.onPhone && item.metadata?.capture !== "pasted"
+      && (item.source === "fireflies" || item.source === "google-meet") ? item.source : null;
+  const deleteSourceId = deleteSource ? item!.sourceId : null;
+  const deleteContext = useRef({ tcw: props.tcw, source: deleteSource, sourceId: deleteSourceId });
+  deleteContext.current = { tcw: props.tcw, source: deleteSource, sourceId: deleteSourceId };
+  useEffect(() => {
+    setDeleteOpen(false);
+    setDeleteBusy(false);
+    setDeleteError(null);
+  }, [props.tcw, deleteSourceId]);
+  // The count the sheet names: read when it opens, so the user sees what goes with the meeting.
+  const [combinedCount, setCombinedCount] = useState<number | null>(null);
+  useEffect(() => {
+    setCombinedCount(null);
+    if (!deleteOpen || !deleteSourceId) return;
+    let live = true;
+    const tcw = props.tcw;
+    const sourceId = deleteSourceId;
+    void (deleteSource === "granola"
+      ? runGranolaSpaceWrite(() => countCombinedReferencing(tcw, "granola", sourceId))
+      : countCombinedReferencing(tcw, deleteSource!, sourceId)).then((res) => {
+      if (live && res.ok && res.data.unverified === 0) setCombinedCount(res.data.count);
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [deleteOpen, props.tcw, deleteSource, deleteSourceId]);
+  const confirmGranolaDelete = () => {
+    if (!deleteSourceId || !deleteSource || deleteBusy) return;
+    const tcw = props.tcw;
+    const sourceId = deleteSourceId;
+    const source = deleteSource;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    void (async () => {
+      try {
+        const result = source === "granola"
+          ? await runGranolaSpaceWrite(() => deleteGranolaMeeting(tcw, "granola", sourceId))
+          : source === "fireflies"
+            ? props.backendUrl && props.sessionStore
+              ? await deleteFirefliesWithLedger(
+                  createConnectorWebhooksClient(props.backendUrl, { sessionStore: props.sessionStore }).recordDeleted,
+                  () => deleteSourceMeeting(tcw, source, sourceId),
+                  sourceId,
+                )
+              : { ok: false as const }
+            : await deleteSourceMeeting(tcw, source, sourceId);
+        if (deleteContext.current.tcw !== tcw || deleteContext.current.sourceId !== sourceId || deleteContext.current.source !== source) return;
+        if (!result.ok) {
+          setDeleteError("Couldn’t delete the meeting. Try again.");
+          return;
+        }
+        setDeleteOpen(false);
+        library.refresh();
+        props.onGranolaDeleted?.();
+        props.onBack();
+      } catch {
+        if (deleteContext.current.tcw === tcw && deleteContext.current.sourceId === sourceId && deleteContext.current.source === source)
+          setDeleteError("Couldn’t delete the meeting. Try again.");
+      } finally {
+        if (deleteContext.current.tcw === tcw && deleteContext.current.sourceId === sourceId && deleteContext.current.source === source) setDeleteBusy(false);
+      }
+    })();
+  };
   const summary = useCombinedSummary({ tcw: props.tcw, runner: props.summaries, item });
   const flow = useCombineFlow({ tcw: props.tcw, onCombined: ({ id, sourceId, created }) => {
     // The combined text is new: the summary gate decides (setting on or unreadable: a run; off: none).
@@ -142,11 +220,17 @@ export function NoteDetail(props: {
       reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
       selectedTranscript?.provenance,
     );
+  // Who spoke when: the "Them N" labels of the transcript shown and the person each carries, for the names this Mac knows.
+  const callSpeakers = useMemo(() => callSpeakerLabels(storedSentences ?? []), [storedSentences]);
   const speakerNames = useSpeakerNames({
     tcw: props.tcw,
+    callSpeakers,
     row: item !== null && !item.onPhone && reads.metadata?.status === "ok" ? item : null,
     metadata: reads.metadata?.status === "ok" ? reads.metadata.metadata : null,
     localId: item?.onPhone === true && item.source === VOICE_NOTE_SOURCE ? item.sourceId : null,
+    // A recording whose row cannot be read now (the space is unreachable): the call's names come from this Mac.
+    unreadRow: item !== null && !item.onPhone && item.source === VOICE_NOTE_SOURCE && item.metadata?.capture !== "pasted"
+      && reads.metadata?.status === "failed" ? item : null,
   });
   const names = speakerNames?.names;
   const onCopy = useCallback(async (withTimestamps = false) => {
@@ -198,11 +282,15 @@ export function NoteDetail(props: {
         activityControl={shareButton ? <>{props.activityControl}{shareButton}</> : props.activityControl}
         shared={shared}
         combine={combine}
+        onDeleteGranola={deleteSource === "granola" && deleteSourceId ? () => { setDeleteError(null); setDeleteOpen(true); } : undefined}
+        onDeleteSource={deleteSource && deleteSource !== "granola" && deleteSourceId ? () => { setDeleteError(null); setDeleteOpen(true); } : undefined}
         speakerNames={speakerNames}
       />
       {/* The visible list: a capture already inside a combined meeting is never offered for a new combine. */}
       <CombineSheet flow={flow} items={library.items} now={new Date()} />
       {combined.remove.open && <DeleteCombinedSheet remove={combined.remove} title={item?.title ?? "Combined meeting"} />}
+      {deleteSourceId && deleteOpen && <DeleteGranolaSheet open title={item?.title ?? "Meeting"} busy={deleteBusy} error={deleteError} combinedCount={combinedCount} source={deleteSource ?? undefined}
+        onKeep={() => { if (!deleteBusy) setDeleteOpen(false); }} onConfirm={confirmGranolaDelete} />}
     </>
   );
 }

@@ -10,7 +10,7 @@ import {
 } from "../fireflies-import-verify.js";
 import { DelegationActivationError } from "../portable-delegation.js";
 import { TenantCoordinator } from "../services/calendar-autojoin-store.js";
-import type { FirefliesGrantStore } from "../services/fireflies-grant-store.js";
+import { FirefliesGrantReplacesMismatchError, type FirefliesGrantStore } from "../services/fireflies-grant-store.js";
 import {
   MAX_SERIALIZED_DELEGATION_BYTES,
   MAX_SIGNATURE_BYTES,
@@ -24,7 +24,7 @@ const ACCEPT_WINDOW_MS = 3_600_000;
 export interface FirefliesDelegationRoutesConfig {
   delegate: FirefliesDelegateIdentity;
   configuredHost: string;
-  store: Pick<FirefliesGrantStore, "store" | "status" | "remove">;
+  store: Pick<FirefliesGrantStore, "store" | "status" | "remove" | "grantCids">;
   authMiddleware: RequestHandler;
   coordinator?: TenantCoordinator;
   now?: () => number;
@@ -120,6 +120,21 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
     }
   });
 
+  // The two grant ids, for the owner's browser to revoke at the node when it turns the import off or purges.
+  // Ids only, kept from the moment the pair is accepted until it is removed, so a lapsed pair still lists them.
+  router.get("/grants", async (req: Request, res: Response) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+    const address = user.address.toLowerCase();
+    try {
+      const cids = await coordinator.run(address, () => config.store.grantCids(address));
+      res.json({ grantCids: cids ? [cids.secrets, cids.meetings] : [] });
+    } catch {
+      console.warn("[fireflies-delegation] op=grants result=unavailable");
+      res.status(503).json({ error: "unavailable" });
+    }
+  });
+
   // Per-address quota precedes the first read of the POST body.
   router.post(
     "/",
@@ -146,7 +161,17 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
         res.status(400).json({ error: "invalid_body" });
         return;
       }
-      const { secretsGrant, meetingsGrant, siwe, signature } = body as Record<string, unknown>;
+      const { secretsGrant, meetingsGrant, siwe, signature, replaces: replacesRaw } = body as Record<string, unknown>;
+      // The ids of the grants this one replaces: required, and empty when the owner has nothing stored.
+      if (
+        !Array.isArray(replacesRaw) ||
+        replacesRaw.length > 2 ||
+        !replacesRaw.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256)
+      ) {
+        res.status(400).json({ error: "invalid_body" });
+        return;
+      }
+      const replaces: string[] = replacesRaw;
       if (
         typeof secretsGrant !== "string" ||
         !secretsGrant ||
@@ -202,12 +227,18 @@ export function createFirefliesDelegationRouter(config: FirefliesDelegationRoute
             address,
             { secretsGrant, meetingsGrant, siwe, signature },
             incoming.verified.expiresAt,
+            replaces,
           );
           return incoming.verified.expiresAt.toISOString();
         });
         console.log("[fireflies-delegation] op=accept result=stored");
         res.json({ state: "active", expiresAt });
       } catch (error) {
+        if (error instanceof FirefliesGrantReplacesMismatchError) {
+          console.warn("[fireflies-delegation] op=accept result=replaces_mismatch");
+          res.status(409).json({ error: "replaces_mismatch" });
+          return;
+        }
         if (error instanceof DelegationActivationError && (error.status === 401 || error.status === 403)) {
           console.warn("[fireflies-delegation] op=accept result=node_rejected");
           res.status(403).json({ error: "delegation_rejected" });

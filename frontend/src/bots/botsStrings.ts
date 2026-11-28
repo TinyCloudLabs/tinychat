@@ -15,15 +15,19 @@ export const BOTS_STRINGS = {
   messageMain: `Message ${MAIN_BOT_NAME}`,
   sendToMain: `Send to ${MAIN_BOT_NAME}`,
   modelLine: "Runs on a confidential model.",
+  mainSettings: `${MAIN_BOT_NAME} settings`,
+  backToChat: "Back to chat",
   tryAgain: "Try again",
-  historyLoading: "Loading earlier messages…",
-  historyFailed: `Couldn't load your earlier messages with ${MAIN_BOT_NAME}.`,
+  historyLoading: "Loading older messages…",
+  historyFailed: `Couldn't load your older messages with ${MAIN_BOT_NAME}.`,
   // Monica, TC-3823, 2026-11-23.
   historyUnreadable: `Some earlier messages with ${MAIN_BOT_NAME} can't be opened with your current encryption key.`,
   // Monica, TC-3887, 2026-11-22. The button reopens the encryption request the owner declined.
   reviewRequest: "Review request",
   errors: {
-    bot_unavailable: `${MAIN_BOT_NAME} couldn't start.`,
+    bot_unavailable: `${MAIN_BOT_NAME} can't be reached right now.`,
+    reply_interrupted: "The connection ended before a result arrived. Check the conversation before sending again.",
+    turn_timeout: "{name} reached the time limit for this task.",
     model_unavailable: `${MAIN_BOT_NAME}'s model isn't answering. Try again later.`,
     busy: `${MAIN_BOT_NAME} is still working on your last message. Send this one when it replies.`,
     at_capacity: "{name} can't start right now because TinyCloud is running as many bots as it can. Your message wasn't sent. Try again shortly.",
@@ -85,7 +89,9 @@ export const BOT_VIEW_STRINGS = {
   historyFailed: (name: string) => `Couldn't load your earlier messages with ${name}.`,
   historyUnreadable: (name: string) => `Some earlier messages with ${name} can't be opened with your current encryption key.`,
   errors: {
-    bot_unavailable: (name: string) => `${name} couldn't start.`,
+    bot_unavailable: (name: string) => `${name} can't be reached right now.`,
+    reply_interrupted: (name: string) => botsErrorText("reply_interrupted", name),
+    turn_timeout: (name: string) => botsErrorText("turn_timeout", name),
     model_unavailable: (name: string) => `${name}'s model isn't answering. Try again later.`,
     busy: (name: string) => `${name} is still working on your last message. Send this one when it replies.`,
     at_capacity: (name: string) => botsErrorText("at_capacity", name),
@@ -185,7 +191,7 @@ export const MEETINGS_ACCESS_STRINGS = {
   off: `${MAIN} can't read your meetings.`,
   allow: `Let ${MAIN} read them`,
   confirmTitle: `Let ${MAIN} read your meetings?`,
-  confirmBody: `${MAIN} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a meeting, it can't use the web or your secrets, or send messages to other bots, in this chat until you start a new chat.`,
+  confirmBody: `${MAIN} can read your recordings, transcripts and meeting notes for 7 days, then it stops. It can't change them. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a meeting, web and secret-backed calls stay paused in this chat. It can propose a message to your other bots, and sends only the exact message and recipients you approve.`,
   confirm: "Allow for 7 days",
   cancel: "Not now",
   on: (date: string) => `${MAIN} can read your meetings until ${date}.`,
@@ -200,13 +206,27 @@ export const FEED_CHATS_ACCESS_STRINGS = {
   off: `${MAIN} can't read your feed or your chats.`,
   allow: `Let ${MAIN} read them`,
   confirmTitle: `Let ${MAIN} read your feed and chats?`,
-  confirmBody: `${MAIN} can read your feed cards and your chats with AI models for 7 days, then it stops. It can't answer cards or change anything. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a card or a chat, it can't use the web or your secrets, or send messages to other bots, in this chat until you start a new chat.`,
+  confirmBody: `${MAIN} can read your feed cards and your chats with AI models for 7 days, then it stops. It can't answer cards or change anything. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a card or a chat, web and secret-backed calls stay paused in this chat. It can propose a message to your other bots, and sends only the exact message and recipients you approve.`,
   confirm: "Allow for 7 days",
   cancel: "Not now",
   on: (date: string) => `${MAIN} can read your feed and chats until ${date}.`,
   turnOff: "Turn off",
   ended: `${MAIN}'s access to your feed and chats has ended.`,
   failed: "Couldn't change this. Try again.",
+} as const;
+
+export const TELEGRAM_ACCESS_STRINGS = {
+  title: "Telegram",
+  off: `${MAIN} can't read your Telegram chats.`,
+  allow: `Let ${MAIN} read them`,
+  confirmTitle: `Let ${MAIN} read your Telegram chats?`,
+  confirmBody: `${MAIN} can read the Telegram chats Inbox collects into your TinyCloud for 7 days, then it stops. It can't send, delete or change messages. What it reads goes to the AI model service to write its answer. Once ${MAIN} reads a Telegram chat, web and secret-backed calls stay paused in this chat. It can propose a message to your other bots, and sends only the exact message and recipients you approve.`,
+  confirm: MEETINGS_ACCESS_STRINGS.confirm,
+  cancel: MEETINGS_ACCESS_STRINGS.cancel,
+  on: (date: string) => `${MAIN} can read your Telegram chats until ${date}.`,
+  turnOff: MEETINGS_ACCESS_STRINGS.turnOff,
+  ended: `${MAIN}'s access to your Telegram chats has ended.`,
+  failed: MEETINGS_ACCESS_STRINGS.failed,
 } as const;
 
 // The owner's "Start a new chat" with Main (TC-3808).

@@ -636,3 +636,163 @@ describe("syncOnDeviceTranscript publishes the result", () => {
     expect(onDeviceTranscriptSyncState(one, "rec-2")).toBeNull();
   });
 });
+
+// While the signed-in app runs them (PendingVoiceNotesSaver), a transcript write the space did not take is tried again by
+// itself, spaced out, until the space takes it: a note recorded while the node is down reaches the space when it is back.
+const { installTranscriptSyncRetries, transcriptSyncForPipeline } = await import("./onDeviceTranscriber");
+const { setAccountWorkPaused } = await import("./accountContext");
+describe("a transcript write the space did not take is tried again by itself", () => {
+  const until = async (check: () => boolean, ms = 2_000) => {
+    for (const end = Date.now() + ms; Date.now() < end && !check();) await new Promise((resolve) => setTimeout(resolve, 5));
+    return check();
+  };
+  const DOWN = { ok: false as const, error: { code: "NODE_NOT_RESPONDING", message: "The place your data is stored isn't responding right now." } };
+
+  test("the note shows when the next try goes out, and the write lands once the space answers", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20, 40] });
+    try {
+      let saves = 0;
+      save = async () => (++saves < 3 ? DOWN : { ok: true, data: {} });
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      const waiting = transcriptSyncForPipeline(tcw, "rec-1");
+      expect(waiting).toMatchObject({ state: "failed", message: "Couldn't add the transcript to this note." });
+      expect(waiting?.state === "failed" && (waiting.retryAt ?? 0) > Date.now() - 5).toBe(true);
+      // What the rest of the app reads is unchanged.
+      expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+      expect(await until(() => onDeviceTranscriptSyncState(tcw, "rec-1")?.state === "synced")).toBe(true);
+      expect(saves).toBe(3);
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "synced" });
+      expect(phone.ledger.transcriptSync.state).toBe("saved");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(saves).toBe(3);
+    } finally { stop(); }
+  });
+
+  test("the tries are spaced out, never a tight loop", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [40, 80] });
+    try {
+      let saves = 0;
+      save = async () => { saves++; return DOWN; };
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      // 0 ms, then +40, +80, +80: at most 4 writes in 250 ms, at least 3.
+      expect(saves).toBeGreaterThanOrEqual(3);
+      expect(saves).toBeLessThanOrEqual(4);
+    } finally { stop(); }
+  });
+
+  test("a try asked for by the user runs at once, and the scheduled one does not run as well", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [60] });
+    try {
+      let saves = 0;
+      save = async () => (++saves < 2 ? DOWN : { ok: true, data: {} });
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toHaveProperty("retryAt");
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toEqual({ state: "synced" });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(saves).toBe(2);
+    } finally { stop(); }
+  });
+
+  test("without the app's retries running nothing is scheduled; installed later, a failed write gets its try; removed, it is cancelled", async () => {
+    const tcw = account();
+    let saves = 0;
+    save = async () => { saves++; return DOWN; };
+    await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+    expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+    const stop = installTranscriptSyncRetries({ delaysMs: [40] });
+    expect(transcriptSyncForPipeline(tcw, "rec-1")).toHaveProperty("retryAt");
+    stop();
+    expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(saves).toBe(1);
+  });
+
+  test("after a sign-out the scheduled try writes nothing for that account", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20] });
+    try {
+      let saves = 0;
+      save = async () => { saves++; return DOWN; };
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      setAccountWorkPaused(tcw, true);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(saves).toBe(1);
+      expect(onDeviceTranscriptSyncState(tcw, "rec-1")).toBeNull();
+    } finally { stop(); }
+  });
+
+  test("while a try runs, the note shows it running, not failed", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20] });
+    try {
+      save = async () => DOWN;
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      let release: (() => void) | undefined;
+      getTranscript = () => new Promise((resolve) => { release = () => resolve({ transcript }); });
+      // The scheduled try has started and is reading this device's transcript.
+      expect(await until(() => release !== undefined)).toBe(true);
+      expect(onDeviceTranscriptSyncState(tcw, "rec-1")?.state).toBe("failed");
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "syncing" });
+      save = async () => ({ ok: true, data: {} });
+      release!();
+      expect(await until(() => onDeviceTranscriptSyncState(tcw, "rec-1")?.state === "synced")).toBe(true);
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "synced" });
+    } finally { stop(); }
+  });
+
+  test("a write the space will refuse the same way again is not retried by itself", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20] });
+    try {
+      let saves = 0;
+      save = async () => { saves++; return { ok: false, error: { code: "VOICE_NOTE_NOT_FOUND", message: "the voice note no longer exists" } }; };
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "failed", message: "Couldn't add the transcript to this note." });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(saves).toBe(1);
+    } finally { stop(); }
+  });
+
+  test("a check that finds the transcript missing writes it and shows the write", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20] });
+    try {
+      // This device's record says the transcript is in the space; the space has none.
+      phone.ledger.transcriptSync = { state: "saved", rev: 1, at: 1 };
+      spaceCommitPresent = false;
+      let finish!: (result: SaveResult) => void;
+      let saves = 0;
+      save = () => { saves++; return saves === 1 ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve({ ok: true as const, data: {} }); };
+      const sync = syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      expect(await until(() => saves === 1)).toBe(true);
+      // The write runs, and the note shows it.
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "syncing" });
+      finish(DOWN);
+      await sync;
+      // It did not land: the note shows the write, retrying by itself.
+      const failed = transcriptSyncForPipeline(tcw, "rec-1");
+      expect(failed).toMatchObject({ state: "failed", message: "Couldn't add the transcript to this note." });
+      expect(failed).toHaveProperty("retryAt");
+      expect(await until(() => onDeviceTranscriptSyncState(tcw, "rec-1")?.state === "synced")).toBe(true);
+      expect(saves).toBe(2);
+    } finally { stop(); }
+  });
+
+  test("a missing local transcript is not retried by itself", async () => {
+    const tcw = account();
+    const stop = installTranscriptSyncRetries({ delaysMs: [20] });
+    try {
+      getTranscript = async () => ({ transcript: null });
+      await syncOnDeviceTranscript(tcw, { ...SAVED, owner: tcw.did, stt: { state: "done" } });
+      expect(transcriptSyncForPipeline(tcw, "rec-1")).toEqual({ state: "failed", message: "this browser says it finished transcribing but has no transcript for the note" });
+      const reads = listings;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(listings).toBe(reads);
+    } finally { stop(); }
+  });
+});

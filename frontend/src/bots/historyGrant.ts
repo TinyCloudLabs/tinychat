@@ -2,6 +2,7 @@
 import type { PermissionEntry, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { DEFAULT_REQUEST_HEADER_NAME, DEFAULT_REQUEST_HEADER_VALUE, SessionStore } from "@tinyboilerplate/client";
 import { serializePortableDelegation, toPortableDelegation } from "../lib/agentDelegation";
+import { BOT_GRANT_MAX_LIFETIME_MS, sessionAuthorityEnd } from "./botGrantLifetime";
 
 import { botHistoryDirectory, SIBLING_BOT_KEY } from "./botHistoryPath";
 
@@ -16,9 +17,9 @@ function grantPermissions(path: string): PermissionEntry[] {
   return [{ service: "tinycloud.kv", space: "applications", skipPrefix: true, path, actions: ["get", "put"] }];
 }
 
-function grantLifetime(siwe: string): number {
-  const expires = Date.parse(/^Expiration Time:\s*(\S+)/im.exec(siwe)?.[1] ?? "");
-  const lifetime = Math.min(7 * 86_400_000, expires - Date.now());
+/** Seven days at most, and never past the session's signed end or the renewed end its backend bearer carries. */
+function grantLifetime(siwe: string, bearer: string | null): number {
+  const lifetime = Math.min(BOT_GRANT_MAX_LIFETIME_MS, sessionAuthorityEnd(siwe, bearer) - Date.now());
   if (!Number.isFinite(lifetime) || lifetime < 60_000) throw new Error("history_session_expired");
   return lifetime;
 }
@@ -48,7 +49,7 @@ export async function ensureBotHistoryGrant(tcw: TinyCloudWeb): Promise<void> {
   const id = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(owner))), b => b.toString(16).padStart(2, "0")).join("");
   const session = tcw.session();
   if (!session?.siwe || !session.signature) throw new Error("history_session_missing");
-  const lifetime = grantLifetime(session.siwe);
+  const lifetime = grantLifetime(session.siwe, token);
   // Check authority before delegateTo, which could otherwise try runtime permission escalation.
   const permissions = grantPermissions(`xyz.tinycloud.tinychat/threads/bots/v1/${id}/`);
   if (!tcw.hasPermissions(permissions)) throw new Error("history_authority_missing");
@@ -74,7 +75,7 @@ export async function mintSiblingHistoryGrant(tcw: TinyCloudWeb, backendDid: str
   if (!session.siwe || !session.signature || !tcw.hasPermissions(permissions)) throw new BotHistoryApprovalNeeded();
   const host = tcw.hosts[0];
   if (!host) throw new Error("history_node_missing");
-  const lifetime = grantLifetime(session.siwe);
+  const lifetime = grantLifetime(session.siwe, currentSession().getToken());
   const result = await tcw.delegateTo(backendDid, permissions, { expiry: lifetime, forceWalletSign: false }).catch((error: unknown) => {
     // The web SDK may carry its own copy of the SDK error class.
     if (error instanceof Error && error.name === "PermissionNotInManifestError") throw new BotHistoryApprovalNeeded();

@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { SessionStore } from "@tinyboilerplate/client";
+import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 
 import { initialBackgroundSyncState, type BackgroundSyncState } from "@/chat/backgroundSyncState";
+import { GranolaAllowBack } from "@/chat/GranolaAllowBack";
 import { DisconnectRow, FirefliesManage, type FirefliesManageProps } from "./ManagePanel";
 
 const noop = () => {};
@@ -19,7 +22,6 @@ function props(state: BackgroundSyncState, patch: Partial<FirefliesManageProps> 
     onCopy: noop,
     onSync: noop,
     onRetry: noop,
-    onBringBack: noop,
     onDisconnect: noop,
     ...patch,
   };
@@ -40,12 +42,12 @@ describe("Fireflies Manage panel", () => {
     expect(render(enabled)).not.toContain("Checking…");
   });
 
-  test("an enabled connection says what it is and offers Rotate, Bring back and Disconnect", () => {
-    const html = render(enabled);
+  test("an enabled connection says what it is and offers Rotate, allow-back and Disconnect", () => {
+    const html = render(enabled, { allowBack: <GranolaAllowBack source="fireflies" tcw={{} as TinyCloudWeb} backendUrl="https://backend.invalid" sessionStore={{} as SessionStore} /> });
     expect(html).toContain(">On<");
     expect(html).not.toContain("Enabled in TinyCloud One");
     expect(html).toContain("Rotate the webhook secret");
-    expect(html).toContain("Bring back deleted meetings");
+    expect(html).toContain("Allow deleted Fireflies meetings back");
     expect(html).toContain("Disconnect Fireflies");
     expect(html).not.toContain("Live");
   });

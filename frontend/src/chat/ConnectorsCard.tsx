@@ -43,6 +43,7 @@ import { syncGranola } from "@/lib/connectors/granolaSync";
 import { readBackgroundDrainGeneration } from "./useBackgroundDrain";
 import { GranolaReconnect, GranolaSummariesNotice } from "./GranolaConnectionNotices";
 import { isFirefliesStale } from "@/lib/connectors/firefliesFreshness";
+import { createFirefliesImportGrantsTeardown } from "@/lib/connectors/firefliesImportGrantsApi";
 import { GmeetClient } from "@/lib/connectors/gmeetClient";
 import {
   GMEET_NOTES_BUSY_MESSAGE,
@@ -171,6 +172,8 @@ const GMEET_STORE: GmeetSyncStore = {
   getConnection: connectorStore.getConnection,
   putTranscriptBody: connectorStore.putTranscriptBody,
   upsertMeeting: connectorStore.upsertMeeting,
+  isMeetingDeleted: connectorStore.isMeetingDeleted,
+  deleteSourceMeeting: connectorStore.deleteSourceMeeting,
   updateSyncState: connectorStore.updateSyncState,
   countMeetings: connectorStore.countMeetings,
   getDriveCursor: connectorStore.getDriveCursor,
@@ -397,6 +400,11 @@ export function ConnectorsCard({
   const meetings: ConnectorMeetingsClient = useMemo(
     () => createConnectorMeetingsClient(backendUrl, { sessionStore }),
     [backendUrl, sessionStore],
+  );
+  // Instant updates going off also withdraws the server's Fireflies import permissions at the node.
+  const importGrants = useMemo(
+    () => createFirefliesImportGrantsTeardown(tcw, backendUrl, sessionStore),
+    [tcw, backendUrl, sessionStore],
   );
   // Which connector (if any) currently owns a modal. Only one can be open at
   // a time — the card is a source list, not a multi-dialog dashboard.
@@ -734,6 +742,7 @@ export function ConnectorsCard({
                     // count is stale until it is re-read.
                     onIngested={() => void refreshRow(d.id)}
                     onFeatureDark={setFeatureDark}
+                    importGrants={importGrants}
                   />
                 )}
               </ConnectorRow>

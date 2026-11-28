@@ -1,5 +1,425 @@
 # @tinychat/backend
 
+## 0.14.9
+
+### Patch Changes
+
+- cf12c92: TinyChat uses the published TinyCloud SDK release 3.16.0 (web-sdk 3.16.0, node-sdk 3.16.0, web-sdk-wasm 1.8.0). Publishing an account's registry record follows the SDK: the wallet or OpenKey signature prompt is the consent, and the SDK publishes only from TinyCloud One and Home. Anywhere else the owner is sent to TinyCloud One to finish setup. The Home card for this step reads "Let your apps find your space" and has a Publish button. It stays hidden for that account on that device once the record is published, and a refused signature or an unavailable service leaves it showing. The desktop app does not show it. Sign-in does not publish the record on its own.
+
+## 0.14.9-beta.0
+
+### Patch Changes
+
+- cf12c92: TinyChat uses the published TinyCloud SDK release 3.16.0 (web-sdk 3.16.0, node-sdk 3.16.0, web-sdk-wasm 1.8.0). Publishing an account's registry record follows the SDK: the wallet or OpenKey signature prompt is the consent, and the SDK publishes only from TinyCloud One and Home. Anywhere else the owner is sent to TinyCloud One to finish setup. The Home card for this step reads "Let your apps find your space" and has a Publish button. It stays hidden for that account on that device once the record is published, and a refused signature or an unavailable service leaves it showing. The desktop app does not show it. Sign-in does not publish the record on its own.
+
+## 0.14.8
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+## 0.14.8-beta.0
+
+### Patch Changes
+
+- 5355ad3: Allow TrustBot to propose and deliver an exact owner-approved message to one or more admitted bots after reading private data. Approval remains bound to the owner, recipients and message and can be used only once; unapproved exports remain held.
+
+  Keep the backend's reply deadline longer than the bot's configured turn budget. Distinguish an interrupted connection from an execution timeout so an already-running task is not described as unable to start.
+
+## 0.14.7
+
+### Patch Changes
+
+- ed7ff22: Keep a deleted Fireflies meeting out of the server-side import. The server holds a one-way code of the meeting ID and the delete time until the user allows those meetings back or deletes the account.
+
+  Details: TC-4414
+
+## 0.14.7-beta.0
+
+### Patch Changes
+
+- ed7ff22: Keep a deleted Fireflies meeting out of the server-side import. The server holds a one-way code of the meeting ID and the delete time until the user allows those meetings back or deletes the account.
+
+  Details: TC-4414
+
+## 0.14.6
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
+## 0.14.6-beta.0
+
+### Patch Changes
+
+- 3ae7f59: Calendar auto-join decisions for invitations that were not accepted or were ineligible carry an invite-only keyed pseudonym, with no start time and no account pseudonym.
+
+  Details: TC-4406
+
+## 0.14.5
+
+### Patch Changes
+
+- 2b52dd6: Ship closed calendar auto-join tick, occurrence decision and connection state events to backend logs.
+
+  Details: TC-4406
+
+## 0.14.5-beta.0
+
+### Patch Changes
+
+- 2b52dd6: Ship closed calendar auto-join tick, occurrence decision and connection state events to backend logs.
+
+  Details: TC-4406
+
+## 0.14.4
+
+### Patch Changes
+
+- 2566862: The backend grants its own session the three TrustBot key roots it uses (Telegram read grants, read audit and standing read approvals), which clears the 503 on the reads status routes. The reads and history grant routes log the error class and a short code when they answer 503.
+
+  Details: TC-4354
+
+- 4c57f71: The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+  Details: TC-4330
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
+## 0.14.4-beta.2
+
+### Patch Changes
+
+- 4c57f71: The main bot's questions and requests are on by default, so it can ask the owner a question, request a secret and propose actions. Each one reaches the owner as a card to approve or decline. An owner who turns them off keeps them off, even after the bot's working state is deleted, and a damaged setting file reads as off.
+
+  Details: TC-4330
+
+## 0.14.4-beta.1
+
+### Patch Changes
+
+- 2566862: The backend grants its own session the three TrustBot key roots it uses (Telegram read grants, read audit and standing read approvals), which clears the 503 on the reads status routes. The reads and history grant routes log the error class and a short code when they answer 503.
+
+  Details: TC-4354
+
+## 0.14.4-beta.0
+
+### Patch Changes
+
+- 258098a: A session restored through its renewal lease keeps reading bot history past the end its sign-in message names. The backend binds the renewed end it verified at sign-in renewal into the session bearer, for that session key only and never past the owner-signed lease, and accepts the session's history key descriptor and history grants up to that end. One reads the same end from the bearer, so it stops showing the session as signed out while the renewal holds. A session without a renewal keeps its signed end.
+
+  Details: TC-4322
+
+## 0.14.3
+
+### Patch Changes
+
+- 4caf0da: The backend image installs the fixed libzstd1 package from the base distribution, which clears the image scan finding CVE-2026-124851.
+
+  Details: TC-4339
+
+## 0.14.3-beta.0
+
+### Patch Changes
+
+- 4caf0da: The backend image installs the fixed libzstd1 package from the base distribution, which clears the image scan finding CVE-2026-124851.
+
+  Details: TC-4339
+
+## 0.14.2
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.14.2-beta.0
+
+### Patch Changes
+
+- 6f1a86a: The entry chunk size budget is 7,645,000 bytes, so the release 5 changes fit it. The backend version moves with the frontend so one release tag carries both.
+
+  Details: TC-4328
+
+## 0.14.1
+
+### Patch Changes
+
+- 65770c7: Chat request records have their own log shipper cap, so polling routes cannot drop them.
+
+  Details: TC-4310
+
+- 40c7751: When a chat message is refused before any model call because the account has no credits left, the answer says "You're out of credits on the {plan} plan, so this message got no reply and nothing was charged.", using the account's plan name.
+
+  Details: TC-4312
+
+- 70b0be0: The backend accepts the development frontend origin https://lightning-node-1.gecko-snares.ts.net:5240 for testing backend changes. The sign-in domain is read from the origin's host, port included, so sessions signed for a host:port domain are accepted.
+
+  Details: TC-4272
+
+## 0.14.1-beta.1
+
+### Patch Changes
+
+- 65770c7: Chat request records have their own log shipper cap, so polling routes cannot drop them.
+
+  Details: TC-4310
+
+- 40c7751: When a chat message is refused before any model call because the account has no credits left, the answer says "You're out of credits on the {plan} plan, so this message got no reply and nothing was charged.", using the account's plan name.
+
+  Details: TC-4312
+
+## 0.14.1-beta.0
+
+### Patch Changes
+
+- 70b0be0: The backend accepts the development frontend origin https://lightning-node-1.gecko-snares.ts.net:5240 for testing backend changes. The sign-in domain is read from the origin's host, port included, so sessions signed for a host:port domain are accepted.
+
+  Details: TC-4272
+
+## 0.14.0
+
+### Minor Changes
+
+- 97fad45: Prepare an option to keep bot reads on while you’re away.
+
+  Details: TC-4000
+
+- d6c02d5: TrustBot can answer agents that message its owner through Courier. Owners pair each agent in TrustBot's settings, and can unpair it there. TrustBot answers only with what the owner lets it read. It doesn't take requests or tasks over Courier.
+
+  TrustBot keeps Courier conversations encrypted. It keeps each message for up to 30 days, the latest 200 messages in each conversation and the 50 most recently active conversations, and deletes older ones. Owners can delete any of these conversations. What TrustBot reads to answer isn't kept, apart from what it writes in its answers.
+
+  Owners can keep any chat out of what TrustBot reads, from TrustBot's settings.
+
+  TrustBot can read the owner's Telegram chats that Inbox collects, when the owner turns on the Telegram read area.
+
+  Details: TC-4058
+
+### Patch Changes
+
+- 7e92a64: Sign-in leaves out access to the Health Log and Recipes sample databases, which TinyCloud One never opens. The check for a missing TinyCloud account reads a path inside TinyChat's own threads folder. Older sign-ins that carry the two databases are accepted.
+
+  Details: TC-4244
+
+- 97fad45: Show the owner a daily summary of bot reads while they were away, with allowed and refused counts by area and kind of read.
+
+  Details: TC-4000
+
+- 97fad45: Limit standing bot reads to the owner's approved areas in windows of up to seven days with a lease of up to 90 days.
+
+  Details: TC-4000
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
+- 0fc95c7: The backend's sign-in manifest and the delegation it asks for name it "TinyCloud One backend" and "TinyCloud One Backend". Permissions, ids and the policy hash stay the same.
+
+  Details: TC-3659
+
+- 97fad45: While standing reads are enabled, the backend records every TrustBot read of the owner's data before it happens, and a read that cannot be recorded does not run. Logging of blocked attempts is bounded. Keep 90 days of counts by day, area and tool.
+
+  Details: TC-4000
+
+## 0.14.0-beta.4
+
+### Patch Changes
+
+- 7e92a64: Sign-in leaves out access to the Health Log and Recipes sample databases, which TinyCloud One never opens. The check for a missing TinyCloud account reads a path inside TinyChat's own threads folder. Older sign-ins that carry the two databases are accepted.
+
+  Details: TC-4244
+
+## 0.14.0-beta.3
+
+### Patch Changes
+
+- 0fc95c7: The backend's sign-in manifest and the delegation it asks for name it "TinyCloud One backend" and "TinyCloud One Backend". Permissions, ids and the policy hash stay the same.
+
+  Details: TC-3659
+
+## 0.14.0-beta.2
+
+### Patch Changes
+
+- 1dccbf7: When a TrustBot read grant is replaced, TinyChat forgets the old grant once its revoke is confirmed and stops retrying after that. Grant records it can't read are dropped.
+
+  Details: TC-4027
+
+## 0.14.0-beta.1
+
+### Minor Changes
+
+- 97fad45: Prepare an option to keep bot reads on while you’re away.
+
+  Details: TC-4000
+
+### Patch Changes
+
+- 97fad45: Show the owner a daily summary of bot reads while they were away, with allowed and refused counts by area and kind of read.
+
+  Details: TC-4000
+
+- 97fad45: Limit standing bot reads to the owner's approved areas in windows of up to seven days with a lease of up to 90 days.
+
+  Details: TC-4000
+
+- 97fad45: While standing reads are enabled, the backend records every TrustBot read of the owner's data before it happens, and a read that cannot be recorded does not run. Logging of blocked attempts is bounded. Keep 90 days of counts by day, area and tool.
+
+  Details: TC-4000
+
+## 0.14.0-beta.0
+
+### Minor Changes
+
+- d6c02d5: TrustBot can answer agents that message its owner through Courier. Owners pair each agent in TrustBot's settings, and can unpair it there. TrustBot answers only with what the owner lets it read. It doesn't take requests or tasks over Courier.
+
+  TrustBot keeps Courier conversations encrypted. It keeps each message for up to 30 days, the latest 200 messages in each conversation and the 50 most recently active conversations, and deletes older ones. Owners can delete any of these conversations. What TrustBot reads to answer isn't kept, apart from what it writes in its answers.
+
+  Owners can keep any chat out of what TrustBot reads, from TrustBot's settings.
+
+  TrustBot can read the owner's Telegram chats that Inbox collects, when the owner turns on the Telegram read area.
+
+  Details: TC-4058
+
+## 0.13.4
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
+## 0.13.4-beta.1
+
+### Patch Changes
+
+- 8fc4c7c: Fireflies meeting import permissions are removed when you disconnect, delete your Fireflies meetings, delete your account or turn off instant updates, and expired ones are cleared automatically. Saving a new permission pair names the pair it replaces, so overlapping saves cannot undo a turn off. A Fireflies key saved in an older format now asks you to save it again instead of retrying. The Library drops deleted Fireflies meetings at once.
+
+  Details: TC-3917
+
+## 0.13.4-beta.0
+
+### Patch Changes
+
+- 39182ae: Verify the full record context when opening bot history. Records written from now on carry their owner, space, path and bot, and every read checks them. Earlier records still open and are reported as earlier records.
+
+  Details: TC-4041
+
+## 0.13.3
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+- 6580219: TrustBot derives the key it reads with inside its secure enclave.
+
+  Upgrading: read areas turned on with test grants before this release are off. Turn them on in TrustBot's settings.
+
+  Details: TC-4000
+
+## 0.13.3-beta.1
+
+### Patch Changes
+
+- 7f1399f: Accept multi-stamp renewal histories from the node, so a lease renewed more than once verifies.
+
+  Details: TC-4000
+
+## 0.13.3-beta.0
+
+### Patch Changes
+
+- 6580219: TrustBot derives the key it reads with inside its secure enclave.
+
+  Upgrading: read areas turned on with test grants before this release are off. Turn them on in TrustBot's settings.
+
+  Details: TC-4000
+
+## 0.13.2
+
+### Patch Changes
+
+- 98b74de: Bot chat history in TinyChat is sealed with its own encryption key. Saving new history needs your approval for that one key. When you open earlier messages, TinyChat can move them to that key.
+
+  Details: TC-3823
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
+- 8aae6b9: Count node errors when retiring replaced bot history grants.
+
+  Details: TC-4013
+
+- c717e11: Send grant tags to existing Main bots and keep sibling permission revocations across restarts.
+
+  Details: TC-4014
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- a38f348: When TrustBot asks you to approve a secret for a call, the request now also names that secret's own encryption key. Secrets saved with their own key can then be read once you approve. Secrets saved earlier keep working through the approval that already covers your whole account's encryption.
+
+  Details: TC-3284
+
+- c12c58e: The sign-in for Connectors now asks for access to each connector key's own encryption key, next to the access that already covers your whole account. Connector keys you save are still stored the same way for now; saving them under their own key is built behind a switch that stays off. If you already use Connectors, you sign in once more the next time you open them so the new access can be approved.
+
+  Details: TC-3284
+
+- b998a6a: Verify renewed TinyChat phone sign-ins with the existing app and lease checks.
+
+  Details: TC-4000
+
+## 0.13.2-beta.6
+
+### Patch Changes
+
+- ed8f146: Keep TrustBot read access active in Home by quietly renewing the read grant for enabled areas while the owner session can extend it.
+
+  Details: TC-4000
+
+- b998a6a: Verify renewed TinyChat phone sign-ins with the existing app and lease checks.
+
+  Details: TC-4000
+
+## 0.13.2-beta.5
+
+### Patch Changes
+
+- c717e11: Send grant tags to existing Main bots and keep sibling permission revocations across restarts.
+
+  Details: TC-4014
+
+## 0.13.2-beta.4
+
+### Patch Changes
+
+- 8aae6b9: Count node errors when retiring replaced bot history grants.
+
+  Details: TC-4013
+
+## 0.13.2-beta.3
+
+### Patch Changes
+
+- df28ad2: Send grant-specific bot history permission updates.
+
+  Details: TC-4006
+
 ## 0.13.2-beta.2
 
 ### Patch Changes

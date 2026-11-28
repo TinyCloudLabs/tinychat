@@ -1,12 +1,12 @@
 // Internal HTTP API, called only by the TinyChat backend (docs/plans/tiny-bots-slice1.md, piece 1).
 // Every SSE event is encoded here from checked fields; nothing from a sandbox is passed through raw.
 
-import type { ActivityRecord, StagedHistory } from "./history";
+import type { ActivityRecord, HistoryGrantUpdate, StagedHistory } from "./history";
 import type { BotAdmission } from "./bot-admission";
 import { type AppSource, type AsksSettings, type BotMessenger, type ErrorCode, ERROR_MESSAGES, type ListedMessage, MAX_TEXT, type TurnSink, type WebSettings } from "./bot";
 import { type OwnerDate, ownerDateFrom } from "./owner-date";
 import { INVALID_HOSTS, parseWebPolicy, type WebPolicy } from "./web-policy";
-import { type AnswerInput, type AnswerResult, type AppOrigin, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
+import { type AnswerInput, type AnswerResult, type AskReply, type AskRequest, parseAnswerInput } from "./asks";
 import { type ActionReply, type ActionRequest, type ActionResult, type ApproveResult, parseApproveInput } from "./actions";
 import { parseAreas, type ReadArea, type ReadsSetting } from "./reads";
 import { isRecord } from "./guards";
@@ -34,6 +34,7 @@ const ALLOWED: Record<Operation, readonly BotState[]> = {
 };
 
 function operationOf(rest: string, method: string): Operation | undefined {
+  if (rest.startsWith("/courier/")) return "read";
   if (rest === "/web" || rest === "/asks" || rest === "/reads" || rest === "/requests" || ANSWER_PATH.test(rest)) return "read";
   if (rest === "/messages") return method === "POST" ? "turn" : "read";
   if (rest === "/history" || rest === "/history/stage" || rest === "/history/permission" || rest === "/history/notice") return "history";
@@ -54,8 +55,9 @@ export interface BotApi {
   list(): Promise<ListedMessage[]>;
   listActivities?(): Promise<ActivityRecord[]>;
   historyPending?(): Promise<unknown>;
+  historyNeedsGrantTag?(): boolean;
   historyStage?(staged: StagedHistory): Promise<void>;
-  historyPermission?(owner: string, expiresAt?: number, validUntil?: number): Promise<void>;
+  historyPermission?(owner: string, expiresAt?: number, validUntil?: number, grant?: HistoryGrantUpdate): Promise<void>;
   historyNotice?(): Promise<unknown>;
   historyNoticeAck?(id: string, receivedAt: number): Promise<void>;
   historyReceipt?(receipt: unknown): Promise<void>;
@@ -86,6 +88,8 @@ export interface AppOptions {
   environment?: Environment;
   /** Unset: from BOTS_ACCEPT_LEGACY_OWNER_HEADER. */
   acceptLegacyOwnerHeader?: boolean;
+  /** Gateway control socket; absent unless BOTS_COURIER_ENABLED is exactly true. */
+  courierControlSocket?: string;
   bots: {
     forOwner(ownerDid: string): BotApi;
     /** A sibling by key. Without it the service has only Main. */
@@ -185,6 +189,7 @@ function eventStream(run: (sink: TurnSink) => Promise<void>): Response {
             const { type, id, verb, count, at } = record;
             send("activity", { type, id, verb, count, at, ...(verb === "messaged_bot" ? { targetKey: record.targetKey } : {}) });
           },
+          step: ({ step, host }) => send("step", host ? { step, host } : { step }),
           done: messageId => send("done", { messageId }),
           error: (code: ErrorCode) => send("error", { code, message: ERROR_MESSAGES[code] }),
         };
@@ -284,6 +289,20 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     catch { return new Response(null, { status: 503 }); }
     if (!state || state === "removed") return new Response(null, { status: 404 });
     if (!ALLOWED[operation].includes(state)) return Response.json({ error: "bot_state", state }, { status: 409 });
+    if (rest.startsWith("/courier/")) {
+      // Legacy bearer calls and sibling bots never reach owner Courier credentials.
+      if (!signed) return new Response(null, { status: 401 });
+      if (key !== MAIN_KEY || !options.courierControlSocket) return new Response(null, { status: 404 });
+      const target = `http://gateway/courier/${encodeURIComponent(owner)}${rest.slice("/courier".length)}${url.search}`;
+      try {
+        const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+        return await fetch(target, {
+          unix: options.courierControlSocket, method: req.method,
+          ...(body?.byteLength ? { body, headers: { "content-type": "application/json" } } : {}),
+          signal: AbortSignal.timeout(10_000),
+        } as RequestInit & { unix: string });
+      } catch { return new Response(null, { status: 503 }); }
+    }
     const found = key === MAIN_KEY ? options.bots.forOwner(owner) : options.bots.forBot?.(owner, key);
     if (!found) return new Response(null, { status: 404 });
     const bot = found;
@@ -340,7 +359,6 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
             if (!messenger || !bot.approveRequest) return Response.json({ error: "invalid" }, { status: 400 });
             const result = await bot.approveRequest(requestId, approve.binding, messenger);
             if (result.ok) return Response.json(result.request);
-            if (result.error === "held") return Response.json({ error: "held" }, { status: 409 });
             return result.error === "invalid" ? Response.json({ error: "invalid" }, { status: 400 }) : Response.json({ error: "not_pending" }, { status: 409 });
           }
           const decision = parseAnswerInput(input);
@@ -363,7 +381,21 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     if (rest === "/history/permission" && req.method === "PUT") {
       try {
         const body = await req.json();
-        await bot.historyPermission?.(owner, body.expiresAt, body.validUntil);
+        const { searchParams } = url;
+        let grant: HistoryGrantUpdate | undefined;
+        if (searchParams.has("kind") || searchParams.has("cid") || searchParams.has("revision")) {
+          const kind = searchParams.get("kind");
+          const cid = searchParams.get("cid");
+          const revision = searchParams.get("revision");
+          if (!signed || (kind !== "extend" && kind !== "revoke" && kind !== "expire") ||
+            !cid || !revision || !/^\d+$/.test(revision) || !Number.isSafeInteger(Number(revision)) ||
+            (kind === "extend" ? !Number.isFinite(body.validUntil) || body.expiresAt !== undefined
+              : !Number.isFinite(body.expiresAt) || body.validUntil !== undefined)) {
+            return new Response(null, { status: 400 });
+          }
+          grant = { kind, cid, revision: Number(revision) };
+        }
+        await bot.historyPermission?.(owner, body.expiresAt, body.validUntil, grant);
         return new Response(null, { status: 204 });
       } catch { return new Response(null, { status: 503 }); }
     }
@@ -379,7 +411,11 @@ export function createApp(options: AppOptions): (req: Request) => Promise<Respon
     }
     if (rest === "/history") {
       try {
-        if (req.method === "GET") return Response.json({ batch: await bot.historyPending?.() ?? null });
+        if (req.method === "GET") {
+          const batch = await bot.historyPending?.() ?? null;
+          const needsGrantTag = signed && key === MAIN_KEY && bot.historyNeedsGrantTag?.();
+          return Response.json({ batch, ...(needsGrantTag ? { needsGrantTag: true } : {}) });
+        }
         if (req.method === "POST" && bot.historyReceipt) { await bot.historyReceipt(await req.json()); return new Response(null, { status: 204 }); }
       } catch { return Response.json({ error: "history_unavailable" }, { status: 503 }); }
       return new Response(null, { status: 405 });

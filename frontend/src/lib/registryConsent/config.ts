@@ -1,11 +1,15 @@
-// TC-3547: the SDK config that registers the consent callbacks. Empty while the switch is off, so every
-// TinyCloudWeb this app builds is exactly what it was before.
+// TC-3547: the SDK config that sends the SDK's registry-publish errors to the session log.
 import type { RegistryPublishHooks } from "@tinyboilerplate/client";
-import { reportRegistryPublishError } from "./adapter";
-import { requestRegistryConsent } from "./broker";
-import { REGISTRY_CONSENT_MODAL_ENABLED } from "./copy";
+import { reportRegistryPublishError, type RegistryPublishClient } from "./adapter";
+import { setupPendingStore } from "./setupPending";
 
-export function registryPublishConfig(enabled: boolean = REGISTRY_CONSENT_MODAL_ENABLED): { registryPublish?: RegistryPublishHooks } {
-  if (!enabled) return {};
-  return { registryPublish: { onRegistryPublishConsent: requestRegistryConsent, onRegistryPublishError: reportRegistryPublishError } };
+/**
+ * The SDK hooks for the registry record: errors go to the session log, and `account.setup.pending` goes to the one
+ * finish-setup notice (setupPending.ts), so the SDK's own setup toast never shows.
+ */
+export function registryPublishConfig(): { registryPublish: RegistryPublishHooks; onAccountSetupPending: (client: RegistryPublishClient) => void } {
+  return {
+    registryPublish: { onRegistryPublishError: reportRegistryPublishError },
+    onAccountSetupPending: (client) => setupPendingStore.request(client),
+  };
 }

@@ -20,7 +20,7 @@ interface AuthRoutesConfig {
 
 export function createAuthRouter(config: AuthRoutesConfig) {
   const router = Router();
-  const webDomains = config.frontendOrigins.map((origin) => new URL(origin).hostname);
+  const webDomains = config.frontendOrigins.map((origin) => new URL(origin).host);
   const nativeDomain = config.nativeSiweDomain ?? "openkey.so";
   const spendRenewalBudget = createVerifyRenewalBudget();
 
@@ -116,8 +116,10 @@ export function createAuthRouter(config: AuthRoutesConfig) {
         res.status(result.status).json({ error: result.code });
         return;
       }
+      // The renewal rides in the bearer: history routes accept the session's own grants up to its end (TC-4322).
       const { token, expiresIn } = await issueSessionToken(address, config.privateKey, {
         notAfter: new Date(result.notAfter * 1000),
+        renewal: { sessionDid: result.sessionDid, end: result.renewedEnd },
       });
       res.json({ token, expiresIn, address: address.toLowerCase(), renewal: { effectiveEnd: result.effectiveEnd } });
     } catch (error) {

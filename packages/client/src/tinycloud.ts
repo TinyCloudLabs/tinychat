@@ -15,17 +15,10 @@ import { withSpaceCapabilitiesRead } from "./manifest.js";
 // ── Configuration ────────────────────────────────────────────────────
 
 /**
- * TC-3547: the host's two callbacks for publishing the owner's registry record. They are handed to the SDK as `Config`
- * fields of the same names. The pinned SDK predates them and ignores them (nothing reads them until a release that
- * carries them); the host feature-checks `ensureOwnerRegistryRecord` before it relies on them.
+ * TC-3547: the host's callback for errors while the SDK publishes the owner's registry record. It is handed to the SDK as
+ * the `Config` field of the same name.
  */
 export interface RegistryPublishHooks {
-  onRegistryPublishConsent?: (preview: {
-    readonly subject: string;
-    readonly nodeDid: string;
-    readonly nodeOrigin: string;
-    readonly space: string;
-  }) => Promise<boolean>;
   onRegistryPublishError?: (error: unknown) => void;
 }
 
@@ -56,6 +49,8 @@ export interface TinyCloudWebConfig {
   uiPlatform?: "native" | "web";
   /** SIWE nonce override. If set, `siweConfig.nonce` still wins inside the SDK. */
   nonce?: string;
+  /** Lifetime of the draft sign-in grant. Defaults to SESSION_EXPIRATION_MS. */
+  sessionExpirationMs?: number;
   /**
    * Optional local KV replication. Omit it (the default) and the SDK config is
    * exactly what it was before replication existed: the key is not present.
@@ -71,6 +66,13 @@ export interface TinyCloudWebConfig {
   openkey?: TinyCloudWebSdkConfig["openkey"];
   /** Omit it and the SDK config is exactly what it was before: the keys are not present. */
   registryPublish?: RegistryPublishHooks;
+  /**
+   * Called with the client when the SDK reports `account.setup.pending` at the end of a sign-in: the owner has no
+   * account record and the SDK can offer setup. Subscribing also keeps the SDK's own setup toast from showing, so the
+   * host's notice is the only prompt. Only `createTinyCloudWeb` (and so `createAndSignIn`) subscribes; a restore never
+   * sets an account up. Omit it and nothing is subscribed.
+   */
+  onAccountSetupPending?: (client: TinyCloudWeb) => void;
 }
 
 export interface RestoreTinyCloudWebSessionResult {
@@ -97,7 +99,7 @@ export function createTinyCloudWeb(
     newUserHost: config?.newUserHost,
     autoCreateSpace: config?.autoCreateSpace ?? true,
     sessionStorage: config?.sessionStorage ?? new BrowserSessionStorage(),
-    sessionExpirationMs: SESSION_EXPIRATION_MS,
+    sessionExpirationMs: config?.sessionExpirationMs ?? SESSION_EXPIRATION_MS,
     nonce: config?.nonce,
     siweConfig: config?.siweConfig,
     ...(config?.domain ? { domain: config.domain } : {}),
@@ -112,7 +114,10 @@ export function createTinyCloudWeb(
     autoBootstrapAccount: false,
   };
 
-  return new TinyCloudWeb(tcwConfig);
+  const tcw = new TinyCloudWeb(tcwConfig);
+  const onPending = config?.onAccountSetupPending;
+  if (onPending) tcw.on("account.setup.pending", () => onPending(tcw));
+  return tcw;
 }
 
 /**
@@ -131,11 +136,16 @@ export async function createAndSignIn(
     ? { ...config?.siweConfig, nonce: config.nonce }
     : config?.siweConfig;
   const tcw = createTinyCloudWeb(web3Provider, { ...config, siweConfig });
-  if (config?.nonce) {
-    await tcw.clearPersistedSession(config.address);
+  try {
+    if (config?.nonce) {
+      await tcw.clearPersistedSession(config.address);
+    }
+    const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
+    return { tcw, session };
+  } catch (error) {
+    tcw.cleanup();
+    throw error;
   }
-  const session = await tcw.signIn(config?.nonce && !config.openkey ? { nonce: config.nonce } : undefined);
-  return { tcw, session };
 }
 
 /** Matched by `code` in frontend/src/lib/sessionRestore.ts. */

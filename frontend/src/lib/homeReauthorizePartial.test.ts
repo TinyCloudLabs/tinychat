@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ISessionStorage, PermissionEntry, PersistedSessionData, TinyCloudWeb } from "@tinycloud/web-sdk";
 import { reauthorizeHome, type HomeReauthorizeDeps } from "./homeReauthorize";
+import { encryptionDecryptGrant } from "./connectors/encryptionGrant";
 import { WEB_APP_MANIFEST } from "./webSignInPrefetch";
 
 const ADDRESS = "0x00000000000000000000000000000000000000A1";
@@ -44,7 +45,7 @@ function approvedWithout(missing: (entry: PermissionEntry) => boolean) {
 const input = { address: ADDRESS, features: ["connectors" as const], config: { autoCreateSpace: true }, canCommit: () => null };
 
 test("everything allowed except unlocking encrypted data is its own outcome, and nothing is kept", async () => {
-  const { deps, records, calls } = approvedWithout((entry) => entry.service === "tinycloud.encryption");
+  const { deps, records, calls } = approvedWithout((entry) => entry.path === encryptionDecryptGrant(ADDRESS).path);
   expect((await reauthorizeHome(deps, input)).outcome).toBe("partial");
   expect(calls.verified).toBe(0);
   expect(calls.completed).toBe(0);

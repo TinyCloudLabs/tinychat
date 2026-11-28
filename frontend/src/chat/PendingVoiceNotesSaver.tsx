@@ -17,7 +17,7 @@ import type { TinyCloudWeb } from "@tinycloud/web-sdk";
 import { VoiceNotes } from "@/lib/voiceNotes/nativeVoiceNotes";
 import { captureCapabilities, captureEngineAvailable } from "@/lib/voiceNotes/captureEngine";
 import { OnDeviceStt } from "@/lib/voiceNotes/onDeviceStt";
-import { syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
+import { installTranscriptSyncRetries, syncOnDeviceTranscript } from "@/lib/voiceNotes/onDeviceTranscriber";
 import { getDesktopWhisperQueue } from "@/lib/voiceNotes/desktop/desktopWhisper";
 import { isTinyCloudNetworkFailure, logVoiceNoteError, pendingSaveMessage, pendingStore, whenVoiceNoteSavesIdle } from "@/lib/voiceNotes/recorderSaves";
 import { advanceAccountGeneration, captureAccountContext, currentAccountGeneration, isAccountContextCurrent, mountVoiceNoteAccount } from "@/lib/voiceNotes/accountContext";
@@ -129,6 +129,8 @@ export function PendingVoiceNotesSaver({
     const accountGeneration = currentAccountGeneration();
     const isAccountCurrent = () => accountGeneration === currentAccountGeneration();
     pipeline.resume();
+    // A transcript write the space did not take (the node was down) is tried again by itself while this account is signed in.
+    const stopTranscriptRetries = installTranscriptSyncRetries();
     const transcriber = voiceNoteTranscriberFor(tcw, backendUrl, sessionStore);
     let runInFlight: Promise<void> | null = null;
     let dirty = false;
@@ -225,6 +227,7 @@ export function PendingVoiceNotesSaver({
       windowTarget?.removeEventListener("focus", onFocus);
       if (appStateHandle) void appStateHandle.remove();
       unsubscribeWake();
+      stopTranscriptRetries();
       unregister(); unmountAccount(); pipeline.cancelAll(); pendingStore.setAccount(null);
     };
   }, [backendUrl, pipeline, sessionStore, tcw]);

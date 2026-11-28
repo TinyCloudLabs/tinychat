@@ -59,6 +59,7 @@ export type FirefliesImportOutcome =
   | "stopped_needs_renewal"
   | "stopped_revoked"
   | "missing_secret"
+  | "resave_required"
   | "storage_full"
   | "fireflies_error"
   | "node_error";
@@ -80,6 +81,7 @@ export interface FirefliesImportMetrics {
   stoppedNeedsRenewal: number;
   stoppedRevoked: number;
   missingSecret: number;
+  resaveRequired: number;
   storageFull: number;
   firefliesErrors: number;
   nodeErrors: number;
@@ -98,6 +100,7 @@ export type FirefliesSecretReadOutcome =
   | { status: "revoked" }
   | { status: "unauthorized" }
   | { status: "missing" }
+  | { status: "resave_required" }
   | { status: "error" };
 
 export type FirefliesMeetingWriteOutcome =
@@ -119,6 +122,7 @@ export interface FirefliesDirectImporterOptions {
   configuredHost: string;
   control?: {
     readLedger(source: string, address: string): Promise<FirefliesPurgeLedgerRead>;
+    readDeleted(source: string, address: string, meetingId: string): Promise<boolean>;
   };
   /**
    * TC-3344 per-tenant reset timestamp reader. Replay markers written strictly before this ISO
@@ -364,6 +368,15 @@ export async function defaultReadSecretKey(
       return { status: "ok", value: result.value.trim() };
     }
     if (result.status === "not_found") return { status: "missing" };
+    // The stored key is not one this reader can open (still sealed to the whole network, or unreadable as stored).
+    // Retrying cannot change that, so it is not an error: only the owner saving the key again fixes it.
+    if (
+      result.status === "legacy_envelope" ||
+      result.status === "corrupt_envelope" ||
+      result.status === "invalid_payload"
+    ) {
+      return { status: "resave_required" };
+    }
     if (result.status === "permission_required") return { status: "unauthorized" };
     return { status: "error" };
   } catch (error) {
@@ -502,6 +515,7 @@ export class FirefliesDirectImporter {
     stoppedNeedsRenewal: 0,
     stoppedRevoked: 0,
     missingSecret: 0,
+    resaveRequired: 0,
     storageFull: 0,
     firefliesErrors: 0,
     nodeErrors: 0,
@@ -614,9 +628,12 @@ export class FirefliesDirectImporter {
     address: string,
     item: { meetingId: string; receivedAt: string; sourceTimestamp?: string },
   ): Promise<{ ok: true } | { ok: false; status: "tombstoned"; reason: string } | { ok: false; status: "error" }> {
-    if (!this.control) return { ok: true };
+    if (!this.control) return { ok: false, status: "error" };
     let ledgerRead: FirefliesPurgeLedgerRead;
     try {
+      if (await this.control.readDeleted(FIREFLIES_SOURCE, address, item.meetingId)) {
+        return { ok: false, status: "tombstoned", reason: "deleted_item" };
+      }
       ledgerRead = await this.control.readLedger(FIREFLIES_SOURCE, address);
     } catch {
       return { ok: false, status: "error" };
@@ -807,6 +824,16 @@ export class FirefliesDirectImporter {
             outcome: "missing_secret",
           };
         }
+        if (secret.status === "resave_required") {
+          this.counts.resaveRequired += 1;
+          this.emitLog(address, meetingId, "resave_required");
+          return {
+            handled: true,
+            httpStatus: 200,
+            body: { status: "resave_required" },
+            outcome: "resave_required",
+          };
+        }
         if (secret.status !== "ok") {
           this.counts.nodeErrors += 1;
           this.emitLog(address, meetingId, "node_error", { stage: "secret_read" });
@@ -846,10 +873,8 @@ export class FirefliesDirectImporter {
           };
         }
 
-        // Step 3 (G2): Write straight to owner KV with ifNoneMatch: "*" (no SQL, no overwrite).
-        // Each write re-checks the purge ledger inside `withConnectorConnectionChange` (the same
-        // per-owner lane POST /purged uses) so a purge landing during fetch or between writes
-        // prevents deleted meetings from coming back.
+        // Check per-ID deletion and the purge ledger inside the connection-change lane before
+        // each write, so a marker recorded during fetch or between writes prevents re-import.
         let lastTombstoneReason = "tombstoned";
         const guardWrite: FirefliesWriteGuard = async (writeOp) =>
           withConnectorConnectionChange(address, async () => {

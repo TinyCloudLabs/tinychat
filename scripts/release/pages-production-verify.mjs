@@ -9,7 +9,7 @@
 import { appendFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { BRANCH_PRODUCTION, classifyPagesCheckRuns, explainUnservedHost, hostServesCommit, repoRoot, run } from './lib.mjs';
+import { BRANCH_PRODUCTION, classifyPagesCheckRuns, explainUnservedHost, fetchTextWhenReady, hostServesCommit, repoRoot, run } from './lib.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -68,7 +68,10 @@ async function indexHtml(url) {
   return response.text();
 }
 
-const expected = await indexHtml(pages.deploymentUrl);
+const expected = await fetchTextWhenReady(pages.deploymentUrl, values.commit, {
+  attempts: Math.max(1, Math.round((Number(values['live-minutes']) * 60) / 15)),
+  onRetry: (error, attempt) => console.log(`${pages.deploymentUrl} did not answer yet (${error.message}), attempt ${attempt}`),
+});
 let liveError;
 const live = await poll(values['live-minutes'], async () => {
   let served;

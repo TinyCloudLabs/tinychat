@@ -37,7 +37,7 @@ import { AutoStopControls } from "../AutoStopControls";
 import { shellAudioInputs } from "../useAudioInputs";
 import { CaptureSettings } from "./CaptureSettings";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { openCaptureSettings } from "./openCaptureSettings";
+import { GET_WHISPER_NO_SETTINGS, openCaptureSettings } from "./openCaptureSettings";
 import { DesktopRing } from "./DesktopRing";
 import { Toasts, showToast } from "./Toasts";
 import "../soft.css";
@@ -87,7 +87,6 @@ function useSizing(root: React.RefObject<HTMLElement | null>) {
   return sizing;
 }
 
-const GET_WHISPER_NO_SETTINGS = "Open ⚙︎ Capture settings on the Capture page to get a Whisper model.";
 
 export interface DesktopRecorderProps {
   /** The rail (768–1023) or the desktop layout (1024 and up); both use these sizes. */

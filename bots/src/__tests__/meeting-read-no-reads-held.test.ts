@@ -127,7 +127,7 @@ test("message_bot is refused when the launcher cannot say whether the chat holds
   } finally { await run.close(); }
 }, 30_000);
 
-test("a Send on a proposal is refused as held when the launcher cannot say, and the proposal stays pending", async () => {
+test("an exact owner-approved Send does not depend on the unapproved-export hold check", async () => {
   const run = setup();
   try {
     const layout = botLayout(mainId, run.roots);
@@ -135,8 +135,11 @@ test("a Send on a proposal is refused as held when the launcher cannot say, and 
     const binding = actionBinding(layout.ownerId, mainId, payload);
     const id = "9c41e0d2a7b3f6c18e5d2a91";
     new ActionStore(layout).ingest([{ id, ...payload, binding, askedAt: Date.now(), outside: false }]);
-    const messenger: BotMessenger = { keys: [sibling], dispatch: async () => ({ text: "unreachable", isError: true as const }) };
-    expect(await run.bots.forOwner(owner).approveRequest(id, binding, messenger)).toEqual({ ok: false, error: "held" });
-    expect(new ActionStore(layout).list().map(request => request.state)).toEqual(["pending"]);
+    const sent: string[] = [];
+    const messenger: BotMessenger = { keys: [sibling], dispatch: async (_key, text) => { sent.push(text); return { text: "Delivered" }; } };
+    expect((await run.bots.forOwner(owner).approveRequest(id, binding, messenger)).ok).toBe(true);
+    await Bun.sleep(0);
+    expect(sent).toEqual([payload.text]);
+    expect(new ActionStore(layout).list().map(request => request.state)).toEqual(["done"]);
   } finally { await run.close(); }
 });

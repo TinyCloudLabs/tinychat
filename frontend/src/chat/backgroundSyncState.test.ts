@@ -11,8 +11,6 @@ import {
   BACKGROUND_SYNC_ENABLED_LABEL,
   applyEnableResult,
   backgroundSyncStatus,
-  cancelHistoricalResync,
-  confirmHistoricalResync,
   disableBackgroundSync,
   dismissReveal,
   enableBackgroundSync,
@@ -20,7 +18,6 @@ import {
   loadOnMount,
   queueNotices,
   refreshQueue,
-  requestHistoricalResync,
   rotateCredentials,
   supportsBackgroundNotifications,
   syncQueuedMeetings,
@@ -841,73 +838,6 @@ describe("historical re-sync", () => {
     expect(h.calls.enable).toEqual([{ source: "fireflies" }]);
     expect(h.calls.clearPurgeLedger).toEqual([]);
     expect(h.state().phase).toBe("enabled");
-  });
-
-  test("asking for it only arms a confirmation — no call is made", async () => {
-    const h = harness();
-    h.emit((s) => ({ ...s, phase: "enabled" }));
-    h.emit(requestHistoricalResync);
-    expect(h.state().resyncConfirming).toBe(true);
-    expect(h.calls.clearPurgeLedger).toEqual([]);
-  });
-
-  test("cancelling disarms it and still calls nothing", async () => {
-    const h = harness();
-    h.emit(requestHistoricalResync);
-    h.emit(cancelHistoricalResync);
-    expect(h.state().resyncConfirming).toBe(false);
-    expect(h.calls.clearPurgeLedger).toEqual([]);
-  });
-
-  test("confirming clears the ledger for THIS source, once", async () => {
-    const h = harness();
-    h.emit((s) => ({ ...s, phase: "enabled" }));
-    h.emit(requestHistoricalResync);
-    await confirmHistoricalResync(h.deps, h.emit);
-    expect(h.calls.clearPurgeLedger).toEqual(["fireflies"]);
-    expect(h.state().resyncConfirming).toBe(false);
-    expect(h.state().busy).toBeNull();
-    expect(h.state().notice?.tone).toBe("info");
-  });
-
-  test("confirming without the confirmation armed does nothing", async () => {
-    // Defence in depth: the destructive call cannot be reached by a stray
-    // handler that skipped the confirm step.
-    const h = harness();
-    await confirmHistoricalResync(h.deps, h.emit);
-    expect(h.calls.clearPurgeLedger).toEqual([]);
-  });
-
-  test("a failed clear says so and stays armed for a retry", async () => {
-    const h = harness({
-      clearPurgeLedger: { status: "retryable", httpStatus: 503, code: null },
-    });
-    h.emit((s) => ({ ...s, phase: "enabled" }));
-    h.emit(requestHistoricalResync);
-    await confirmHistoricalResync(h.deps, h.emit);
-    expect(h.state().notice?.tone).toBe("error");
-    expect(h.state().notice?.retryable).toBe(true);
-    // NOT cleared: the surface must not imply history is available again.
-    expect(h.state().resyncConfirming).toBe(true);
-    expect(h.state().busy).toBeNull();
-  });
-
-  test("a lost session moves the phase rather than claiming a clear", async () => {
-    const h = harness({ clearPurgeLedger: { status: "unauthenticated" } });
-    h.emit((s) => ({ ...s, phase: "enabled" }));
-    h.emit(requestHistoricalResync);
-    await confirmHistoricalResync(h.deps, h.emit);
-    expect(h.state().phase).toBe("signed-out");
-    expect(h.state().resyncConfirming).toBe(true);
-  });
-
-  test("the confirmation copy is about history returning, not about the queue", async () => {
-    const h = harness();
-    h.emit((s) => ({ ...s, phase: "enabled" }));
-    h.emit(requestHistoricalResync);
-    await confirmHistoricalResync(h.deps, h.emit);
-    const message = h.state().notice?.message ?? "";
-    expect(message.toLowerCase()).toContain("deleted");
   });
 });
 

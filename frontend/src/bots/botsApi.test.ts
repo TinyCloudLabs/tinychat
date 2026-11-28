@@ -35,6 +35,12 @@ async function collect(response: Response) {
 }
 
 describe("sendToMain", () => {
+  test("an interrupted reply and an execution deadline retain distinct error codes", async () => {
+    for (const code of ["reply_interrupted", "turn_timeout"] as const) {
+      expect(await collect(streamed(`event: error\ndata: ${JSON.stringify({ code })}\n\n`, [13])))
+        .toEqual([{ type: "error", code }]);
+    }
+  });
   test("parses status, delta and done across arbitrary chunk splits and skips unknown events", async () => {
     const body = [
       "event: status\ndata: {\"state\":\"starting\"}\n\n",

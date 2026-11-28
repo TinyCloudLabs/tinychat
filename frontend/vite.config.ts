@@ -14,6 +14,35 @@ import { stablelibBrowserCrypto } from "./src/lib/stablelibBrowserCrypto";
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const requireFromApp = createRequire(import.meta.url);
 
+// The desktop app's "Record this call" tile (src/callPrompt): a second page, not a route, so its window never loads the
+// app's entry chunk. The index.html hooks below (preloads, preconnects) are not for it.
+const CALL_PROMPT_PAGE = "call-prompt.html";
+const isCallPromptPage = (ctx: { filename: string }) => path.basename(ctx.filename) === CALL_PROMPT_PAGE;
+
+/**
+ * The tile page as small as it can be: without Vite's modulepreload polyfill, which a second page would otherwise move
+ * out of the app's entry chunk into a shared chunk the app then loads too, and without the web app's manifest link.
+ * Placed after VitePWA, which adds that link.
+ */
+function callPromptPage(): Plugin {
+  const polyfill = 'import "vite/modulepreload-polyfill";\n';
+  return {
+    name: "tinychat-call-prompt-page",
+    apply: "build",
+    enforce: "post",
+    transform(code, id) {
+      if (path.basename(id) !== CALL_PROMPT_PAGE || !code.startsWith(polyfill)) return null;
+      return { code: code.slice(polyfill.length), map: null };
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(html, ctx) {
+        return isCallPromptPage(ctx) ? html.replace(/<link rel="manifest"[^>]*>/, "") : html;
+      },
+    },
+  };
+}
+
 /** A polyfill shim's file: the ESM build under `vite dev`, the CommonJS build (as before) for `vite build`. */
 function resolveShim(id: string, command: "serve" | "build"): string {
   return command === "serve" ? fileURLToPath(import.meta.resolve(id)) : requireFromApp.resolve(id);
@@ -109,8 +138,9 @@ export default defineConfig(({ command, mode }) => {
         },
         transformIndexHtml: {
           order: "post",
-          handler(_html, { bundle }) {
-            const wasm = Object.values(bundle ?? {}).find((file) => file.type === "asset" && file.names.includes(wasmName));
+          handler(_html, ctx) {
+            if (isCallPromptPage(ctx)) return;
+            const wasm = Object.values(ctx.bundle ?? {}).find((file) => file.type === "asset" && file.names.includes(wasmName));
             // Same mode and credentials as wasm-bindgen's fetch(), so the preloaded response is reused.
             return wasm && [{ tag: "link", attrs: { rel: "preload", href: `/${wasm.fileName}`, as: "fetch", crossorigin: "anonymous" }, injectTo: "head" }];
           },
@@ -130,11 +160,12 @@ export default defineConfig(({ command, mode }) => {
       // desktop app's own (desktop/src-tauri/tauri.conf.json). Its webview reaches its own process over ipc: (or
       // http://ipc.localhost on Windows), so only a desktop build's copy of the meta policy names those sources;
       // the web header and the web and phone builds never do. The Tauri CLI sets TAURI_ENV_PLATFORM for
-      // beforeBuildCommand and beforeDevCommand.
+      // beforeBuildCommand and beforeDevCommand. The call prompt tile's page (CALL_PROMPT_PAGE) has no meta policy to
+      // extend: its window has only the desktop app's own.
       name: "tinychat-desktop-ipc-csp",
       apply: "build",
-      transformIndexHtml(html) {
-        if (!process.env.TAURI_ENV_PLATFORM) return html;
+      transformIndexHtml(html, ctx) {
+        if (!process.env.TAURI_ENV_PLATFORM || (ctx && isCallPromptPage(ctx))) return html;
         const marker = "connect-src 'self' ";
         if (html.split(marker).length !== 2) throw new Error("index.html's Content-Security-Policy must carry exactly one connect-src 'self'");
         return html.replace(marker, `${marker}ipc: http://ipc.localhost `);
@@ -145,7 +176,8 @@ export default defineConfig(({ command, mode }) => {
       // first request after sign-in restore does not also pay DNS, TCP and TLS (two round trips to
       // the node's gateway). Only origins this build is configured with; dev without them adds none.
       name: "tinychat-preconnect",
-      transformIndexHtml() {
+      transformIndexHtml(_html, ctx) {
+        if (isCallPromptPage(ctx)) return;
         const env = loadEnv(mode, rootDir, "VITE_");
         const origins = [env.VITE_TINYCLOUD_HOST, env.VITE_BACKEND_URL].flatMap((value) => {
           try { return value ? [new URL(value).origin] : []; } catch { return []; }
@@ -209,6 +241,8 @@ export default defineConfig(({ command, mode }) => {
         globIgnores: [
           "agents/**", "assets/tauri-window-*.js", "**/franken_markdown_bg*.wasm",
           "assets/kv-storage*.js", "assets/replica-*.js", "assets/profile-gate-*.js", "assets/404.html",
+          // The desktop app's tile page and its own script and style (src/callPrompt): a web install never shows it.
+          "call-prompt.html", "assets/call-prompt-*.js", "assets/call-prompt-*.css",
         ],
         // The main chunk (~7.4 MB, most of it the TinyCloud SDK) and the SDK's WASM (1.4 MB) are needed to boot;
         // Workbox skips anything over its 2 MiB default, which would leave the shell unable to boot offline.
@@ -252,6 +286,7 @@ export default defineConfig(({ command, mode }) => {
         skipWaiting: false,
       },
     }),
+    callPromptPage(),
   ],
   resolve: {
     alias: {
@@ -282,6 +317,13 @@ export default defineConfig(({ command, mode }) => {
   },
   build: {
     rollupOptions: {
+      // The app. The desktop app's tile page (CALL_PROMPT_PAGE above, which shares only the Tauri core chunk) is an
+      // input only for a desktop build: the Tauri CLI sets TAURI_ENV_PLATFORM for beforeBuildCommand, and the web
+      // and phone builds never do, so their dist has no tile page and the web Pages deploy never serves it.
+      input: {
+        index: path.resolve(rootDir, "index.html"),
+        ...(process.env.TAURI_ENV_PLATFORM ? { "call-prompt": path.resolve(rootDir, CALL_PROMPT_PAGE) } : {}),
+      },
       output: {
         // The Tauri window API is reached only from the desktop app's recording title (a lazy import).
         // Naming its chunk lets the web PWA precache leave it out (globIgnores below). core and event

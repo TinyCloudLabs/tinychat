@@ -14,7 +14,7 @@ name: Desktop build (TinyCloud One)
 # (exo-desktop@0.2.0-beta.3 failed on an unknown --ad-hoc-sign that way).
 #
 # Cache: GitHub-owned actions/cache stores Cargo downloads and compiler artifacts keyed by Cargo.lock, rustc version,
-# and the Apple Silicon target. PRs restore; main and tag builds may save. Only compilation directories are cached:
+# and the Apple Silicon target. PR, tag and release builds restore; only main CI builds may save. Only compilation directories are cached:
 # Tauri bundles (including ad-hoc-signed .app and .dmg outputs) are excluded. SwiftPM's repository cache
 # (mlx-swift, speech-swift, WhisperKit clones) is separate, keyed on Cargo.lock.
 #
@@ -90,7 +90,7 @@ jobs:
     name: Signing preflight (desktop-release)
     if: inputs.sign
     runs-on: ubuntu-latest
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam).
+    # Signing secrets live only in this environment (deployment branches: main only; no required reviewer).
     environment: desktop-release
     timeout-minutes: 5
     steps:
@@ -140,7 +140,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       SAVE_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' && !inputs.sign }}
-      SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+      SAVE_RUST_CACHE: ${{ github.ref == 'refs/heads/main' && inputs.ref == '' && !inputs.sign }}
     # Cold builds compile whisper.cpp, MLX and ~1,100 crates on 3 vCPUs.
     timeout-minutes: 150
     outputs:
@@ -195,9 +195,38 @@ jobs:
             desktop/src-tauri/target/release/build
             desktop/src-tauri/target/release/.fingerprint
             desktop/src-tauri/target/release/incremental
-          key: rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          # v2 excludes app build outputs; do not restore the oversized v1 archive.
+          key: rust-tauri-exo-desktop-macos-arm64-v2-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
           restore-keys: |
-            rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-
+            rust-tauri-exo-desktop-macos-arm64-v2-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-
+
+      - name: Disk and cache sizes
+        if: always()
+        run: |
+          df -h / /private/var/folders 2>/dev/null || true
+          for path in \
+            "$HOME/.cargo/registry" \
+            "$HOME/.cargo/git" \
+            desktop/src-tauri/target/debug/deps \
+            desktop/src-tauri/target/debug/build \
+            desktop/src-tauri/target/debug/.fingerprint \
+            desktop/src-tauri/target/debug/incremental \
+            desktop/src-tauri/target/release/deps \
+            desktop/src-tauri/target/release/build \
+            desktop/src-tauri/target/release/.fingerprint \
+            desktop/src-tauri/target/release/incremental; do
+            du -sk "$path" 2>/dev/null | awk -v path="$path" '{ printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, path; found=1 } END { if (!found) printf "missing %s\n", path }' || true
+          done || true
+          build_dir=desktop/src-tauri/target/release/build
+          build_sizes="$(du -sk "$build_dir"/*/ 2>/dev/null | sort -nr | head -25)" || true
+          printf 'Largest release/build directories (MiB, KiB):\n' || true
+          printf '%s\n' "$build_sizes" | awk -F '\t' 'NF > 1 { printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, $2 }' || true
+          printf 'out directories for the 10 largest release/build directories (MiB, KiB):\n' || true
+          printf '%s\n' "$build_sizes" | head -10 | cut -f2- | while IFS= read -r path; do
+            du -sk "${path%/}"/*/out 2>/dev/null | awk -F '\t' '{ printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, $2 }' || true
+          done || true
+          sw_vers || true
+          printf 'TMPDIR=%s\n' "${TMPDIR:-}" || true
 
       - name: Require pinned Xcode
         run: test -d "$DEVELOPER_DIR"
@@ -367,13 +396,27 @@ jobs:
             desktop/src-tauri/target/release/bundle/dmg/*.dmg
             desktop/src-tauri/target/release/bundle/macos/*.app.zip
 
+      - name: Desktop build output sizes
+        if: always()
+        run: |
+          df -h / || true
+          printf 'Largest exo-desktop build children (MiB, KiB):\n' || true
+          du -sk desktop/src-tauri/target/release/build/exo-desktop/*/ 2>/dev/null | sort -nr | head -25 | awk -F '\t' '{ printf "%.1f MiB (%s KiB) %s\n", $1 / 1024, $1, $2 }' || true
+
       - name: Save SwiftPM repository cache
         if: env.SAVE_CACHE == 'true' && steps.swiftpm.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/Library/Caches/org.swift.swiftpm
           key: ${{ steps.swiftpm.outputs.cache-primary-key }}
+      # The app crate rebuilds in both cargo test and tauri build; keep native dependency outputs.
+      - name: Drop app build outputs from Rust cache
+        run: |
+          rm -rf desktop/src-tauri/target/release/build/exo-desktop
+          rm -rf desktop/src-tauri/target/release/.fingerprint/exo-desktop-*
+
       - name: Save Tauri Rust dependencies
+        timeout-minutes: 20
         if: env.SAVE_RUST_CACHE == 'true' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
@@ -388,7 +431,11 @@ jobs:
             desktop/src-tauri/target/release/build
             desktop/src-tauri/target/release/.fingerprint
             desktop/src-tauri/target/release/incremental
-          key: rust-tauri-exo-desktop-macos-arm64-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          key: rust-tauri-exo-desktop-macos-arm64-v2-${{ runner.os }}-${{ runner.arch }}-aarch64-apple-darwin-${{ steps.rust-version.outputs.version }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+
+      - name: Disk space after build
+        if: always()
+        run: df -h / || true
 
   sign:
     name: ${{ inputs.sign && 'Sign and notarize (desktop-release)' || 'Sign (dry run, ad-hoc, no secrets)' }}
@@ -396,9 +443,10 @@ jobs:
     # Explicit: a skipped preflight would otherwise skip this job too.
     if: ${{ !inputs.smoke && !cancelled() && needs.build.result == 'success' }}
     runs-on: macos-26
-    # Signing secrets live only in this environment (deployment branches: main; required reviewer: Sam). This job checks
-    # out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no bun, no
-    # cargo, no tauri, no node_modules binary.
+    # Signing secrets live only in this environment (deployment branches: main only; no required reviewer). The workflow
+    # runs only from main and the provenance step below checks the release tag before any secret is read. This job
+    # checks out nothing but scripts/release and the entitlements at the workflow commit and runs no project code: no
+    # bun, no cargo, no tauri, no node_modules binary.
     environment: ${{ inputs.sign && 'desktop-release' || '' }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer

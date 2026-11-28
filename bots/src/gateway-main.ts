@@ -17,6 +17,7 @@
 //                         name this turn, the supervisor's counts and the proposals that are final
 //   POST   /bots/<botId>/actions/drain           {"actions"}: the proposals the bot has made since the last drain
 //   POST   /bots/<botId>/actions/spend {"id", "binding"}  204 once for an approval the gateway issued with that binding, else 409
+//   POST|DELETE /bots/<botId>/turn              meter one supervisor turn, settling its model calls before logging
 //   PUT|DELETE /bots/<botId>/secrets/<id>, POST /bots/<botId>/secrets/drain   secret requests (secret-routes.ts)
 
 import { chmodSync, mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -27,7 +28,6 @@ import { ADMISSION_CONTROL_PATH, createAdmissionRelay, MAX_ADMISSION_BYTES } fro
 import { fileActionLedgerStore } from "./actions-desk";
 import { parseActionsPush } from "./actions";
 import { gatewayConfig, SECRET_ORIGINS } from "./config";
-import { sealKeyFromDstack } from "./dstack-key";
 import { networkDeps } from "./fetch-net";
 import { fileBudgetStore, fileOwnerStore, Gateway } from "./gateway";
 import { fileHeldStore, MeetingDesk } from "./meeting-reads";
@@ -35,13 +35,14 @@ import { parseReadsPush } from "./reads";
 import { isRecord } from "./guards";
 import { egressPaths } from "./layout";
 import { BOT_ID } from "./owner";
-import { SecretGrants } from "./secret-grants";
 import { nodeSecretReader } from "./secret-node";
 import { secretRoute, SECRETS_ROUTE } from "./secret-routes";
-import { sealedGrantStore } from "./secret-store";
+import { startSecretGrants } from "./secret-start";
 import { addressKey, readableAddress } from "./web";
 import { parseWebPolicy } from "./web-policy";
 import { parseAsksPush } from "./asks";
+import { startCourierGateway, type CourierGateway } from "./courier/runtime";
+import { courierPeerHash } from "./courier/intake";
 
 const { backendOrigin, backendCallSecret, ...cfg } = gatewayConfig(process.env);
 const admit = createAdmissionRelay(backendOrigin, backendCallSecret);
@@ -49,37 +50,27 @@ const aci = process.env.BOTS_HISTORY_ENABLED === "true" ? new BotAci(cfg.upstrea
 
 /** How often open secret requests are checked with OpenKey; it keeps an approval for 10 minutes. */
 const SECRET_POLL_MS = 5_000;
-// Secret requests need the sealing key from the CVM's key service. Without it they are refused (503) and the secret
-// tools are not offered, never kept unsealed; everything else runs as before.
-async function startSecrets(): Promise<SecretGrants | undefined> {
-  try {
-    const key = await sealKeyFromDstack();
-    const grants = new SecretGrants({ store: sealedGrantStore(cfg.secretGrantsDir!, key), reader: nodeSecretReader(SECRET_ORIGINS.node), origins: SECRET_ORIGINS });
-    // The deploy check looks for this line: the gateway's user reached the key service (bots/README.md, Deploying).
-    console.log(JSON.stringify({ gateway: "secrets_ready" }));
-    return grants;
-  } catch (error) {
-    console.error(JSON.stringify({ gateway: "secrets_unavailable", reason: error instanceof Error ? error.message.slice(0, 200) : "unknown" }));
-    return undefined;
-  }
-}
-const secrets = await startSecrets();
+const secrets = await startSecretGrants({ grantsDir: cfg.secretGrantsDir!, origins: SECRET_ORIGINS, reader: nodeSecretReader(SECRET_ORIGINS.node) });
 if (secrets) setInterval(() => void secrets.poll().catch(() => undefined), SECRET_POLL_MS);
 
 // Budgets persist on the gateway's own volume. An unreadable budget file stops the start (fails closed) with one
 // operator line naming the file and the recovery; the non-zero exit keeps Docker restarting it, each time logged.
-function startGateway(): Gateway {
+function startGateway(): { gateway: Gateway; reads: MeetingDesk } {
   try {
-    return new Gateway(cfg, {
+    const reads = new MeetingDesk({
+      backendOrigin, backendCallSecret, forwardRefusals: true,
+      store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")),
+    });
+    return { gateway: new Gateway(cfg, {
       store: fileBudgetStore(cfg.budgetFile),
       ownerStore: cfg.ownersFile ? fileOwnerStore(cfg.ownersFile) : undefined,
       // Which conversations hold the owner's data, beside the budget file; an unreadable file stops the start.
-      meetings: new MeetingDesk({ backendOrigin, backendCallSecret, store: fileHeldStore(join(dirname(cfg.budgetFile), "held.json")) }),
+      meetings: reads,
       actionStore: fileActionLedgerStore(join(dirname(cfg.budgetFile), "actions.json")),
       verifiedFetch: aci ? (botId, url, init) => aci.fetch(botId, url, init) : undefined,
       secrets,
       secretNet: networkDeps,
-    });
+    }), reads };
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -91,7 +82,12 @@ function startGateway(): Gateway {
     process.exit(78);
   }
 }
-const gateway = startGateway();
+const { gateway, reads } = startGateway();
+let courier: CourierGateway | undefined;
+if (process.env.BOTS_COURIER_ENABLED === "true") {
+  try { courier = await startCourierGateway({ cfg, gateway, reads, env: process.env }); }
+  catch { console.error(JSON.stringify({ gateway: "courier", peer: courierPeerHash(""), outcome: "unavailable" })); }
+}
 const listeners = new Map<string, Server<undefined>>();
 
 // Registrations do not survive a restart; the supervisor registers again before every message. Stale sockets go,
@@ -133,7 +129,19 @@ const control = Bun.serve({
   maxRequestBodySize: MAX_ADMISSION_BYTES,
   async fetch(req) {
     const { pathname } = new URL(req.url);
+    if (pathname.startsWith("/courier/")) {
+      try { return await courier?.control(req) ?? new Response(null, { status: 404 }); }
+      catch { return new Response(null, { status: 503 }); }
+    }
     if (pathname === ADMISSION_CONTROL_PATH) return admit(req);
+    const turnMatch = /^\/bots\/([0-9a-f]{64})\/turn$/.exec(pathname);
+    if (turnMatch) {
+      const botId = turnMatch[1]!;
+      if (req.method === "POST") gateway.beginTurn(botId);
+      else if (req.method === "DELETE") void gateway.endTurn(botId);
+      else return new Response(null, { status: 405 });
+      return new Response(null, { status: 204 });
+    }
     const receiptMatch = /^\/bots\/([0-9a-f]{64})\/receipts$/.exec(pathname);
     if (req.method === "GET" && receiptMatch) return Response.json(aci?.take(receiptMatch[1]!) ?? []);
     const readsMatch = /^\/bots\/([0-9a-f]{64})\/reads$/.exec(pathname);
@@ -223,6 +231,7 @@ console.log(JSON.stringify({ gateway: "listening", models: cfg.models }));
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
+    courier?.stop();
     for (const botId of [...listeners.keys()]) unlisten(botId);
     void control.stop(true);
     process.exit(0);

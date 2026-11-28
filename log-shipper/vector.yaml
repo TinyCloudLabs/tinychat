@@ -79,7 +79,7 @@ transforms:
           method = string(j.method) ?? ""
           if !includes(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER"], method) { abort }
           route = string(j.route) ?? ""
-          if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/auth/verify-renewal", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots", "/api/bots/:key", "/api/bots/:key/history/grant", "/api/bots/:key/history/notice", "/api/bots/:key/history/notice/ack", "/api/bots/:key/messages", "/api/bots/history/grant", "/api/bots/history/key", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/asks", "/api/bots/main/messages", "/api/bots/main/new-chat", "/api/bots/main/reads", "/api/bots/main/reads/:area", "/api/bots/main/requests", "/api/bots/main/requests/:id/answer", "/api/bots/main/web", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/fireflies/delegation", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/granola/v1/notes", "/api/connectors/granola/v1/notes/:id", "/api/connectors/granola/v1/notes/:id/transcript", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purge-check", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/bots/admit", "/api/internal/bots/main/reads/:tool", "/api/internal/calendar-autojoin-counts", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/meetings/scope", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
+          if !includes(["/api/agent/chat", "/api/agent/session", "/api/attestation/self", "/api/auth/nonce", "/api/auth/verify", "/api/auth/verify-renewal", "/api/billing/checkout", "/api/billing/config", "/api/billing/portal", "/api/billing/rates", "/api/billing/status", "/api/billing/webhook", "/api/bots", "/api/bots/:key", "/api/bots/:key/history/grant", "/api/bots/:key/history/notice", "/api/bots/:key/history/notice/ack", "/api/bots/:key/messages", "/api/bots/history/grant", "/api/bots/history/key", "/api/bots/history/notice", "/api/bots/history/notice/ack", "/api/bots/history/status", "/api/bots/main/asks", "/api/bots/main/courier/grant", "/api/bots/main/courier/identity", "/api/bots/main/courier/peers", "/api/bots/main/courier/peers/:handle", "/api/bots/main/courier/threads", "/api/bots/main/courier/threads/:id", "/api/bots/main/messages", "/api/bots/main/new-chat", "/api/bots/main/reads", "/api/bots/main/reads/:area", "/api/bots/main/reads/chats/:chat", "/api/bots/main/reads/chats/denied", "/api/bots/main/reads/renewal", "/api/bots/main/reads/renewal/revoked", "/api/bots/main/reads/standing", "/api/bots/main/reads/standing/:cid", "/api/bots/main/reads/standing/summary", "/api/bots/main/reads/telegram/chats", "/api/bots/main/requests", "/api/bots/main/requests/:id/answer", "/api/bots/main/web", "/api/bots/status", "/api/chat", "/api/chat/model-selection", "/api/chat/models", "/api/connectors/fireflies/delegation", "/api/connectors/fireflies/delegation/grants", "/api/connectors/google/autojoin/begin", "/api/connectors/google/autojoin/disable", "/api/connectors/google/autojoin/disconnect", "/api/connectors/google/autojoin/enable", "/api/connectors/google/autojoin/exchange", "/api/connectors/google/autojoin/status", "/api/connectors/google/oauth/callback", "/api/connectors/google/oauth/desktop/start", "/api/connectors/google/oauth/exchange", "/api/connectors/google/oauth/refresh", "/api/connectors/google/oauth/revoke", "/api/connectors/google/oauth/start", "/api/connectors/granola/v1/notes", "/api/connectors/granola/v1/notes/:id", "/api/connectors/granola/v1/notes/:id/transcript", "/api/connectors/webhooks/:source/:token", "/api/connectors/webhooks/ack", "/api/connectors/webhooks/config", "/api/connectors/webhooks/deleted", "/api/connectors/webhooks/drain", "/api/connectors/webhooks/pending", "/api/connectors/webhooks/purge-check", "/api/connectors/webhooks/purged", "/api/delegations", "/api/delegations/status", "/api/exo/v1/grant", "/api/exo/v1/requests", "/api/internal/assemblyai-status", "/api/internal/bots/admit", "/api/internal/bots/main/reads/:tool", "/api/internal/bots/main/reads/audit/refusal", "/api/internal/calendar-autojoin-counts", "/api/internal/credential-row-count", "/api/manifest", "/api/nras-proxy", "/api/nras-proxy/jwks", "/api/openapi.json", "/api/phala-verify", "/api/server-info", "/api/signature/:id", "/api/transcriber/assemblyai/capabilities", "/api/transcriber/assemblyai/hosted/admin/reconcile", "/api/transcriber/assemblyai/hosted/jobs/:source_id", "/api/transcriber/assemblyai/hosted/transcripts", "/api/transcriber/assemblyai/hosted/transcripts/:handle", "/api/transcriber/assemblyai/hosted/transcripts/:handle/sentences", "/api/transcriber/assemblyai/hosted/uploads", "/api/transcriber/assemblyai/hosted/uploads/:upload_id", "/api/transcriber/assemblyai/hosted/uploads/:upload_id/parts/:index", "/api/transcriber/assemblyai/transcripts/:id", "/api/transcriber/meetings", "/api/transcriber/meetings/:id", "/api/transcriber/meetings/:id/stop", "/api/transcriber/meetings/:id/transcript", "/api/transcriber/meetings/scope", "/api/transcriber/private-cloud/capabilities", "/api/transcriber/private-cloud/transcriptions", "/api/transcriber/private-cloud/transcriptions/:id", "/api/transcriber/private-cloud/transcriptions/:id/cancel", "/api/transcriber/private-cloud/transcriptions/:id/result", "/api/transcriber/webhooks/ptx", "/health", "unmatched"], route) { route = "unmatched" }
           if !is_integer(j.status) { abort }
           status = int(j.status) ?? 0
           if status < 100 || status > 599 { abort }
@@ -147,6 +147,50 @@ transforms:
             status = int(j.status) ?? 0
             if status >= 100 && status <= 599 { out.status = status }
           }
+        } else if name == "calendar_autojoin_tick" {
+          if !is_integer(j.tenants) || !is_integer(j.rows) || !is_integer(j.scans) || !is_integer(j.timers_due) || !is_integer(j.duration_ms) || !is_boolean(j.scan_complete) { abort }
+          tenants = int(j.tenants) ?? -1
+          rows = int(j.rows) ?? -1
+          scans = int(j.scans) ?? -1
+          timers_due = int(j.timers_due) ?? -1
+          duration_ms = int(j.duration_ms) ?? -1
+          if tenants < 0 || tenants > 1000000 || rows < 0 || rows > 1000000 || scans < 0 || scans > 1000000 || timers_due < 0 || timers_due > 1000000 || duration_ms < 0 || duration_ms > 86400000 { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "tenants": tenants, "rows": rows, "scans": scans, "timers_due": timers_due, "scan_complete": j.scan_complete == true, "duration_ms": duration_ms}
+        } else if name == "calendar_autojoin_scan" {
+          if !is_integer(j.listed) || !is_integer(j.eligible) || !is_integer(j.skipped_not_confirmed) || !is_integer(j.skipped_not_timed) || !is_integer(j.skipped_no_meet_link) || !is_integer(j.skipped_not_accepted) || !is_integer(j.skipped_other) || !is_boolean(j.scan_complete) { abort }
+          listed = int(j.listed) ?? -1
+          eligible = int(j.eligible) ?? -1
+          skipped_not_confirmed = int(j.skipped_not_confirmed) ?? -1
+          skipped_not_timed = int(j.skipped_not_timed) ?? -1
+          skipped_no_meet_link = int(j.skipped_no_meet_link) ?? -1
+          skipped_not_accepted = int(j.skipped_not_accepted) ?? -1
+          skipped_other = int(j.skipped_other) ?? -1
+          if listed < 0 || listed > 1000000 || eligible < 0 || eligible > 1000000 || skipped_not_confirmed < 0 || skipped_not_confirmed > 1000000 || skipped_not_timed < 0 || skipped_not_timed > 1000000 || skipped_no_meet_link < 0 || skipped_no_meet_link > 1000000 || skipped_not_accepted < 0 || skipped_not_accepted > 1000000 || skipped_other < 0 || skipped_other > 1000000 { abort }
+          if j.scan_complete == true && eligible + skipped_not_confirmed + skipped_not_timed + skipped_no_meet_link + skipped_not_accepted + skipped_other != listed { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "listed": listed, "eligible": eligible, "skipped_not_confirmed": skipped_not_confirmed, "skipped_not_timed": skipped_not_timed, "skipped_no_meet_link": skipped_no_meet_link, "skipped_not_accepted": skipped_not_accepted, "skipped_other": skipped_other, "scan_complete": j.scan_complete == true}
+        } else if name == "calendar_autojoin_decision" {
+          reason = string(j.reason) ?? ""
+          if !includes(["sent", "completed", "failed", "cancelled", "missed", "missed_window", "not_accepted", "event_ineligible", "event_changed", "already_recorded", "unverified_capture", "capacity_exhausted", "shared", "recording_deleted", "autojoin_disabled", "create_rejected", "google_needs_reconnect", "lookup_identity_mismatch", "unknown"], reason) { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "reason": reason}
+          if reason == "not_accepted" || reason == "event_ineligible" {
+            invite_hash = string(j.invite_hash) ?? ""
+            if match(invite_hash, r'^[0-9a-f]{12}$') { out.invite_hash = invite_hash }
+          } else {
+            start = string(j.start) ?? ""
+            if !match(start, r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') { abort }
+            out.start = start
+            tenant_hash = string(j.tenant_hash) ?? ""
+            if match(tenant_hash, r'^[0-9a-f]{12}$') { out.tenant_hash = tenant_hash }
+          }
+        } else if name == "calendar_autojoin_connection" {
+          state = string(j.state) ?? ""
+          if !includes(["disabled", "enabling", "enabled", "needs_reconnect", "unknown"], state) { abort }
+          code = string(j.code) ?? ""
+          if code != "" && !includes(["needs_reconnect", "calendar_scan_failed", "scan_incomplete", "calendar_transport", "calendar_rate_limited", "calendar_unauthorized", "calendar_access_denied", "calendar_unavailable", "calendar_invalid_response", "unknown"], code) { abort }
+          out = {"svc": "backend", "event": name, "component": "calendar-autojoin", "level": "info", "ts": ts, "state": state}
+          if code != "" { out.code = code }
+          tenant_hash = string(j.tenant_hash) ?? ""
+          if match(tenant_hash, r'^[0-9a-f]{12}$') { out.tenant_hash = tenant_hash }
         } else if name == "assemblyai_provider_blocked" {
           reason = string(j.reason) ?? ""
           if !includes(["billing_blocked", "key_rejected", "rate_limited"], reason) { abort }
@@ -271,12 +315,14 @@ transforms:
       . = out
   # TC-2537: per-request records are capped so traffic (or a request flood) cannot exhaust the shared Better Stack
   # allowance: at most 10 problem records (5xx, stream error or aborted) and 20 routine records per minute.
+  # TC-4310: chat requests go to their own lane only, so the problem and routine tests leave them out.
   request_split:
     type: route
     inputs: [allowlist]
     route:
-      problem: '.event == "tinychat_request" && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
-      routine: '.event == "tinychat_request" && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      problem: '.event == "tinychat_request" && !(.route_template == "/api/agent/chat" || .route_template == "/api/chat") && ((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      routine: '.event == "tinychat_request" && !(.route_template == "/api/agent/chat" || .route_template == "/api/chat") && !((int(.status) ?? 0) >= 500 || .stream == "error" || .stream == "aborted")'
+      chat: '.event == "tinychat_request" && (.route_template == "/api/agent/chat" || .route_template == "/api/chat")'
       budget: '.event == "agent_chat_budget_preflight"'
       settled: '.event == "agent_turn_settled"'
   request_problem_cap:
@@ -288,6 +334,13 @@ transforms:
     type: throttle
     inputs: [request_split.routine]
     threshold: 20
+    window_secs: 60
+  # TC-4310: chat request records (one per turn) have their own cap of 60 per minute, like the per-turn caps below,
+  # so polling routes cannot fill the lanes above.
+  request_chat_cap:
+    type: throttle
+    inputs: [request_split.chat]
+    threshold: 60
     window_secs: 60
   # TC-3734: agent chat credit checks (one per turn) have their own cap, so a busy hour of them neither starves the
   # request records above nor lands in the generic `other` bucket. The cap keeps the first 60 per minute.
@@ -308,7 +361,11 @@ transforms:
     inputs: [request_split._unmatched]
     route:
       lane: '.event == "backend_storage_lane_wait"'
-      calendar: '.component == "calendar-autojoin"'
+      calendar: '.component == "calendar-autojoin" && .event == "backend_log_error"'
+      calendar_decision: '.event == "calendar_autojoin_decision" && !(.reason == "not_accepted" || .reason == "event_ineligible")'
+      calendar_invite: '.event == "calendar_autojoin_decision" && (.reason == "not_accepted" || .reason == "event_ineligible")'
+      calendar_scan: '.event == "calendar_autojoin_scan"'
+      calendar_state: '.event == "calendar_autojoin_connection" || .event == "calendar_autojoin_tick"'
   lane_cap:
     type: throttle
     inputs: [diagnostic_split.lane]
@@ -318,6 +375,26 @@ transforms:
     type: throttle
     inputs: [diagnostic_split.calendar]
     threshold: 10
+    window_secs: 60
+  calendar_decision_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar_decision]
+    threshold: 120
+    window_secs: 60
+  calendar_invite_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar_invite]
+    threshold: 20
+    window_secs: 60
+  calendar_scan_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar_scan]
+    threshold: 30
+    window_secs: 60
+  calendar_state_cap:
+    type: throttle
+    inputs: [diagnostic_split.calendar_state]
+    threshold: 30
     window_secs: 60
   other_cap:
     type: throttle
@@ -336,7 +413,8 @@ transforms:
       tenant = calendar && .phase == "tenant_reconcile"
       due = calendar && .phase == "due_timer"
       lag = calendar && .phase == "dispatch_lag_status"
-      other = !(slow || timeout || tick || tenant || due || lag)
+      typed_calendar = includes(["calendar_autojoin_tick", "calendar_autojoin_scan", "calendar_autojoin_decision", "calendar_autojoin_connection"], .event)
+      other = !(slow || timeout || tick || tenant || due || lag || typed_calendar)
       slow_count = if slow { 1 } else { 0 }
       timeout_count = if timeout { 1 } else { 0 }
       tick_count = if tick { 1 } else { 0 }
@@ -388,7 +466,7 @@ transforms:
 sinks:
   betterstack:
     type: http
-    inputs: [request_problem_cap, request_routine_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, other_cap, diagnostic_summary_cap]
+    inputs: [request_problem_cap, request_routine_cap, request_chat_cap, budget_preflight_cap, turn_settled_cap, lane_cap, calendar_cap, calendar_decision_cap, calendar_invite_cap, calendar_scan_cap, calendar_state_cap, other_cap, diagnostic_summary_cap]
     method: post
     uri: "https://s2795438.us-west-2a.betterstackdata.com/"
     encoding: { codec: json }
