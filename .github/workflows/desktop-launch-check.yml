@@ -60,7 +60,9 @@ jobs:
           BUNDLE_VERSION: ${{ inputs.bundle-version }}
           SIGNED: ${{ inputs.signed && 'signed' || 'unsigned' }}
         run: |
-          mapfile -t zips < <(find "$RUNNER_TEMP/exo-build" -name '*.app.zip')
+          # The macOS runner's default shell is bash 3.2, which has no mapfile.
+          zips=()
+          while IFS= read -r found; do zips+=("$found"); done < <(find "$RUNNER_TEMP/exo-build" -name '*.app.zip')
           if [ "${#zips[@]}" -ne 1 ]; then
             echo "::error::Expected one .app.zip, found: ${zips[*]}"
             exit 1
